@@ -1,0 +1,9 @@
+.env
+logs/
+output/
+cache/
+profile.json
+paths.json
+__pycache__/
+*.pyc
+venv/

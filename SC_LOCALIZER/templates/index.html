@@ -1,0 +1,790 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>SC Localizer</title>
+<style>
+  :root {
+    --bg: #0e1621; --panel: #16212e; --line: #2a3c52;
+    --text: #dbe6f3; --muted: #7e93aa; --accent: #3da9fc;
+    --ok: #35c26b; --warn: #e8b13a; --err: #e5484d;
+    /* Раскрытый список рисует система, CSS его не берёт. Эта строка —
+       единственный способ сделать и выпадашку тёмной, а не белой. */
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.55 "Segoe UI", system-ui, sans-serif;
+         display: flex; justify-content: center; padding: 28px 16px; }
+  .window { width: 100%; max-width: 700px; }
+  h1 { font-size: 19px; margin: 0 0 22px; font-weight: 600; }
+  h1 span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+
+  .step { margin-bottom: 18px; }
+  .step-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
+  .step-label b { color: var(--text); font-weight: 600; }
+  .row { display: flex; gap: 8px; }
+  input[type=text] {
+    flex: 1; min-width: 0; background: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px;
+    font-size: 13px; font-family: Consolas, monospace; }
+  input[type=text].bad { border-color: var(--err); }
+
+  /* appearance:none обязателен — иначе Windows рисует свой белый список,
+     и он выбивается из тёмной темы. Стрелку тогда рисуем сами. */
+  select {
+    appearance: none; -webkit-appearance: none;
+    background-color: var(--panel); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: 9px 30px 9px 11px; font-size: 13px; font-family: inherit;
+    cursor: pointer; white-space: nowrap;
+    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%237e93aa' stroke-width='1.6' fill='none' stroke-linecap='round'/%3E%3C/svg%3E");
+    background-repeat: no-repeat; background-position: right 10px center; }
+  select:hover { border-color: var(--accent); }
+  select:focus { outline: none; border-color: var(--accent); }
+  /* Сам выпадающий список рисует система; цвет пунктов задаём хотя бы так. */
+  select option { background: var(--panel); color: var(--text); }
+
+  button {
+    background: var(--panel); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 9px 16px; font-size: 13px; font-family: inherit;
+    cursor: pointer; white-space: nowrap; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent);
+                   color: #06121e; font-weight: 600; }
+  .actions { display: flex; gap: 8px; margin: 22px 0 8px; }
+  .actions button { flex: 1; padding: 13px; font-size: 14px; }
+  /* Две равные кнопки под главной: «что переводим» и «чем переводим».
+     Раньше здесь стояла бледная мелочь, и настройка файлов терялась в спойлере,
+     который никто не открывал. */
+  .actions-sub { display: flex; gap: 8px; margin-bottom: 4px; }
+  .actions-sub button { flex: 1; padding: 11px; font-size: 13px; }
+  .file-status { font-size: 12px; margin-top: 5px; min-height: 16px; }
+  .file-status.ok { color: var(--ok); } .file-status.bad { color: var(--err); }
+
+  /* Лог */
+  .log-head { display: flex; justify-content: space-between; align-items: center;
+              padding: 9px 12px; background: var(--panel); border: 1px solid var(--line);
+              border-radius: 6px; cursor: pointer; user-select: none;
+              /* Отбиваем от спойлера и результата — иначе слипаются в кашу. */
+              margin-top: 22px; }
+  .log-head:hover { border-color: var(--accent); }
+  .log-head span { color: var(--muted); font-size: 12px; }
+  #logBody { display: none; margin-top: 8px; background: #0b1119; border: 1px solid var(--line);
+             border-radius: 6px; padding: 10px 12px; max-height: 260px; overflow-y: auto;
+             font-family: Consolas, monospace; font-size: 12px; }
+  #logBody.open { display: block; }
+  .le { display: flex; gap: 9px; padding: 2px 0; }
+  .le .t { color: #4d637d; flex-shrink: 0; }
+  .le.ok .m { color: var(--ok); } .le.warn .m { color: var(--warn); }
+  .le.error .m { color: var(--err); }
+
+  /* Окно категорий */
+  .overlay { position: fixed; inset: 0; background: rgba(4, 9, 15, .75);
+             display: none; align-items: center; justify-content: center; padding: 20px; }
+  .overlay.open { display: flex; }
+  .modal { background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
+           width: 100%; max-width: 620px; max-height: 86vh; display: flex; flex-direction: column; }
+  .modal-head { display: flex; justify-content: space-between; align-items: center;
+                padding: 15px 18px; border-bottom: 1px solid var(--line); }
+  .modal-head h2 { margin: 0; font-size: 15px; font-weight: 600; }
+  .modes { display: flex; flex-direction: column; gap: 8px; padding: 14px 18px;
+           border-bottom: 1px solid var(--line); }
+  .mode { text-align: left; display: block; padding: 11px 14px; border-radius: 8px;
+          background: var(--panel); border: 1px solid var(--line); cursor: pointer; }
+  .mode:hover { border-color: var(--accent); }
+  .mode b { display: block; color: var(--text); font-size: 14px; margin-bottom: 3px; }
+  .mode span { display: block; color: var(--muted); font-size: 12px; line-height: 1.45; }
+  .mode.active { border-color: var(--accent); background: rgba(61,169,252,.12); }
+  .mode.active b { color: var(--accent); }
+  .modal-note { padding: 10px 18px; color: var(--muted); font-size: 12px;
+                line-height: 1.5; border-bottom: 1px solid var(--line); }
+  /* Тонкая настройка нужна только режиму «Только описания». */
+  .cats-hidden #catsHint, .cats-hidden #cats { display: none; }
+  .modal-body { padding: 8px; overflow-y: auto; }
+  .modal-foot { padding: 12px 18px; border-top: 1px solid var(--line);
+                display: flex; justify-content: space-between; align-items: center; }
+  .modal-foot .sum { color: var(--muted); font-size: 13px; }
+  .x { background: none; border: none; color: var(--muted); font-size: 20px;
+       cursor: pointer; padding: 0 6px; line-height: 1; }
+  .x:hover { color: var(--text); }
+  label.cat { display: flex; gap: 10px; padding: 9px 10px; border-radius: 6px;
+              cursor: pointer; align-items: flex-start; }
+  label.cat:hover { background: var(--panel); }
+  label.cat input { margin-top: 4px; flex-shrink: 0; }
+  .cat-body { flex: 1; min-width: 0; }
+  .cat-title { display: flex; justify-content: space-between; gap: 10px; }
+  .cat-hint { color: var(--muted); font-size: 12px; }
+  .count { color: var(--accent); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .result { margin-top: 14px; padding: 12px 14px; border-radius: 6px;
+            background: var(--panel); border: 1px solid var(--line); display: none; }
+  .result.show { display: block; }
+  .result a { color: var(--accent); }
+  /* Список версий тянется во всю ширину, как поле ввода в соседних шагах.
+     Список веток остаётся компактным — он стоит между полем и кнопкой. */
+  #tag { flex: 1; }
+  .src-note { color: var(--muted); font-size: 12px; margin-top: 3px; }
+  .footer { margin-top: 18px; display: flex; justify-content: flex-end; }
+  .footer button { color: var(--muted); }
+  .footer button:hover { color: var(--err); border-color: var(--err); }
+  .bye { text-align: center; padding: 60px 20px; color: var(--muted); }
+
+  /* Плашка о свежести перевода — первое, что видит человек при запуске. */
+  .fresh { display: flex; gap: 9px; align-items: baseline;
+           padding: 10px 13px; margin-bottom: 18px; border-radius: 6px;
+           background: var(--panel); border: 1px solid var(--line); font-size: 13px; }
+  .fresh .dot { flex-shrink: 0; font-size: 11px; color: var(--muted); }
+  .fresh.ok { border-color: rgba(53,194,107,.45); }
+  .fresh.ok .dot { color: var(--ok); }
+  .fresh.warn { border-color: rgba(232,177,58,.45); }
+  .fresh.warn .dot { color: var(--warn); }
+  .fresh.bad { border-color: rgba(229,72,77,.45); }
+  .fresh.bad .dot { color: var(--err); }
+  .fresh[hidden] { display: none; }
+  .upd-btn { margin-left: auto; padding: 5px 14px; font-size: 12px;
+             align-self: center; flex-shrink: 0; }
+
+  /* Окно «Настроить перевод» — то же оформление, что у окна выбора режима. */
+  .modal-section { padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  .modal-section:last-of-type { border-bottom: none; }
+  .modal-section > .step-label:first-child { margin-top: 0; }
+</style>
+</head>
+<body>
+<div class="window">
+  <h1>SC Localizer<span id="appVer">сборка русской локализации Star Citizen</span></h1>
+
+  <div class="fresh" id="fresh">
+    <span class="dot">&#9679;</span>
+    <span id="freshText">Проверяю, есть ли свежий перевод…</span>
+  </div>
+
+  <div class="fresh warn" id="appUpd" hidden>
+    <span class="dot">&#9679;</span>
+    <span id="appUpdText"></span>
+    <button id="doUpdate" class="upd-btn">Обновить</button>
+  </div>
+
+  <div class="step">
+    <label class="step-label" for="gamePath">Папка игры StarCitizen</label>
+    <div class="row">
+      <input type="text" id="gamePath" spellcheck="false" placeholder="...\StarCitizen">
+      <select id="branch" title="Ветка игры"></select>
+      <button id="gameBrowse">Обзор…</button>
+    </div>
+    <div class="file-status" id="gameStatus"></div>
+    <label class="cat" style="padding-left:0">
+      <input type="checkbox" id="instLang">
+      <div class="cat-body">
+        <div class="cat-hint">Ставить languages.ini — в меню игры язык будет
+          называться «Русский» вместо «Korean». На перевод не влияет.</div>
+      </div>
+    </label>
+  </div>
+
+  <div class="actions">
+    <button class="primary" id="install">Установить в игру</button>
+  </div>
+  <div class="actions-sub">
+    <button id="openCats">Выбрать перевод</button>
+    <button id="openSetup">Настроить перевод</button>
+  </div>
+
+  <div class="result" id="result"></div>
+
+  <div class="log-head" id="logToggle">
+    <b>Лог</b><span id="logHint">показать</span>
+  </div>
+  <div id="logBody"></div>
+
+  <div class="footer">
+    <button id="quit">Выход</button>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Выбор перевода</h2>
+      <button class="x" id="closeCats">&times;</button>
+    </div>
+    <div class="modes">
+      <button class="mode" data-mode="basic">
+        <b>Только описания</b>
+        <span>Описания, диалоги, журнал. Названия и интерфейс — английские. Рекомендуется.</span>
+      </button>
+      <button class="mode" data-mode="full">
+        <b>Полный русский</b>
+        <span>Всё на русском, включая интерфейс, меню и названия.</span>
+      </button>
+      <button class="mode" data-mode="english">
+        <b>Английский с блюпринтами</b>
+        <span>Без перевода. Английский текст, где в описания контрактов добавлены чертежи (blueprints).</span>
+      </button>
+    </div>
+    <div class="modal-note" id="catsHint">Тонкая настройка режима «Только описания»:</div>
+    <div class="modal-body" id="cats"></div>
+    <div class="modal-foot">
+      <span class="sum" id="catsSum">&nbsp;</span>
+      <button id="closeCats2">Готово</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="setupOverlay">
+  <div class="modal">
+    <div class="modal-head">
+      <h2>Настройка перевода</h2>
+      <button class="x" id="closeSetup">&times;</button>
+    </div>
+    <div class="modal-body" style="padding:0">
+      <div class="modal-section">
+        <div class="src-note" id="srcStatus"></div>
+        <div class="src-note" id="enVer" style="margin-bottom:10px"></div>
+
+        <label class="step-label" for="tag">Версия перевода</label>
+        <div class="row">
+          <select id="tag" title="Версия перевода"></select>
+          <button id="fetch">Скачать</button>
+        </div>
+        <div class="src-note" style="margin-top:6px">Свежая версия скачивается сама
+          при запуске. Здесь можно взять другую — например, под старый патч игры.</div>
+      </div>
+
+      <div class="modal-section">
+        <label class="step-label" for="enPath">Английская локализация</label>
+        <div class="row">
+          <input type="text" id="enPath" spellcheck="false" placeholder="...\english\global.ini">
+          <button id="enBrowse">Обзор…</button>
+        </div>
+        <div class="file-status" id="enStatus"></div>
+
+        <label class="step-label" for="ruPath" style="margin-top:10px">Русская локализация</label>
+        <div class="row">
+          <input type="text" id="ruPath" spellcheck="false" placeholder="...\russian\global.ini">
+          <button id="ruBrowse">Обзор…</button>
+        </div>
+        <div class="file-status" id="ruStatus"></div>
+        <div class="src-note" style="margin-top:8px">Свои файлы нужны редко. Как только
+          укажешь их руками, обновления с GitHub качаться перестанут.</div>
+      </div>
+
+      <div class="modal-section">
+        <label class="step-label">Сборка без установки</label>
+        <div class="row">
+          <button id="build" style="flex:1">Собрать файл</button>
+        </div>
+        <div class="src-note" id="buildNote" style="margin-top:6px">Соберёт
+          global.ini в папку output — для установки вручную. В игру ничего
+          не запишет.</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <span class="sum">&nbsp;</span>
+      <button id="closeSetup2">Готово</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => (s ?? '').replace(/[<&>]/g, c => ({'<':'&lt;','&':'&amp;','>':'&gt;'}[c]));
+const num = n => n.toLocaleString('ru');
+let logOpen = false, logTimer = null;
+
+/* ---------- пути ---------- */
+function applyPaths(p) {
+  $('enPath').value = p.english;
+  $('ruPath').value = p.russian;
+  mark('en', p.english_ok);
+  mark('ru', p.russian_ok);
+}
+
+async function loadPaths() {
+  applyPaths(await (await fetch('/api/paths')).json());
+}
+
+function mark(which, ok) {
+  const inp = $(which + 'Path'), st = $(which + 'Status');
+  const empty = !inp.value.trim();
+  // Пустое поле — не ошибка: файлы качаются сами, руками их указывать
+  // никто не обязан. Красным ругаемся только на реально неверный путь.
+  inp.classList.toggle('bad', !ok && !empty);
+  st.className = 'file-status ' + (ok ? 'ok' : empty ? '' : 'bad');
+  st.textContent = ok ? 'файл найден' : empty ? 'скачается автоматически' : 'файл не найден';
+  // Кнопку сборки по этим путям больше не блокируем: файлы качаются сами,
+  // и клик их достанет. Раньше кнопка гасла из-за путей в закрытом спойлере —
+  // снаружи это выглядело как «сломалась без причины». Не хватает файлов —
+  // об этом скажет ошибка, а не молчаливо серая кнопка.
+}
+
+async function savePaths() {
+  const res = $('result');
+  try {
+    const r = await fetch('/api/paths', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({english: $('enPath').value, russian: $('ruPath').value})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'не удалось сохранить путь');
+    // Берём ответ сервера, а не перечитываем: раньше повторное чтение
+    // возвращало старое значение и выбранный файл молча откатывался.
+    applyPaths(d);
+    // Файлы указали руками — метка «скачано с GitHub» больше не верна.
+    loadSource();
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--err)">${esc(e.message)}</span>`;
+    res.classList.add('show');
+  }
+}
+
+// Кнопки "Обзор" для файлов и для папки игры устроены одинаково.
+async function browseInto(btnId, apiName, onPicked) {
+  const btn = $(btnId), res = $('result');
+  btn.disabled = true; btn.textContent = 'Выбери…';
+  try {
+    const r = await fetch('/api/browse', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({which: apiName})
+    });
+    const d = await r.json();
+    // Ошибку обязательно показываем: пустой catch тут однажды спрятал падение
+    // сервера, и снаружи это выглядело как мёртвая кнопка.
+    if (!r.ok) throw new Error(d.error || 'сервер вернул ошибку');
+    if (d.path) await onPicked(d.path);
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--err)">Не удалось открыть окно выбора: ${esc(e.message)}</span>`;
+    res.classList.add('show');
+    loadLog();
+  }
+  btn.disabled = false; btn.textContent = 'Обзор…';
+}
+
+for (const which of ['en', 'ru']) {
+  $(which + 'Browse').addEventListener('click', () =>
+    browseInto(which + 'Browse', which === 'en' ? 'english' : 'russian', async path => {
+      $(which + 'Path').value = path;
+      await savePaths();
+    }));
+  $(which + 'Path').addEventListener('change', savePaths);
+}
+
+/* ---------- источник: GitHub ---------- */
+async function loadSource() {
+  const st = $('srcStatus'), ver = $('enVer');
+  st.className = 'file-status';
+  st.textContent = 'смотрю, что есть на GitHub…';
+
+  let s;
+  try {
+    s = await (await fetch('/api/source')).json();
+  } catch (e) {
+    st.className = 'file-status bad';
+    st.textContent = 'GitHub недоступен — укажи файлы вручную';
+    return;
+  }
+
+  // Актуальная — свежайшая из подходящих версии игры. Просто первая в списке
+  // не годится: она может быть уже под следующий патч, и часть строк
+  // осталась бы без перевода.
+  const fitting = s.releases.filter(r => r.fits_game);
+  const actual = (fitting[0] || s.releases[0] || {}).tag || '';
+  const preferred = s.ru_tag || actual;
+
+  const sel = $('tag');
+  sel.innerHTML = s.releases.map(r =>
+    `<option value="${esc(r.tag)}" ${r.tag === preferred ? 'selected' : ''}>` +
+    `${esc(r.tag)} — ${esc(r.date)}${r.tag === actual ? ' ✓ актуальная' : ''}</option>`
+  ).join('') || '<option value="">—</option>';
+
+  if (s.error) {
+    st.className = 'file-status bad';
+    st.textContent = s.error;
+    $('fetch').disabled = true;
+  } else {
+    $('fetch').disabled = false;
+    ver.textContent = s.english_version
+      ? 'Английский: StarStrings (последняя версия)'
+        + (s.game_version ? ` · версия игры: ${s.game_version}` : '')
+      : '';
+  }
+
+  if (s.error) {
+    // текст ошибки уже стоит
+  } else if (s.source && s.source.startsWith('github:')) {
+    st.className = 'src-note';
+    st.textContent = `Сейчас используется перевод ${s.source.slice(7)}, скачанный с GitHub.`;
+  } else {
+    st.className = 'src-note';
+    st.textContent = 'Файлы скачиваются автоматически при сборке. '
+      + 'Ниже можно выбрать версию или указать свои.';
+  }
+}
+
+$('fetch').addEventListener('click', async () => {
+  const btn = $('fetch'), res = $('result');
+  btn.disabled = true; btn.textContent = 'Качаю…';
+  if (!logOpen) $('logToggle').click();
+  try {
+    const r = await fetch('/api/fetch', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({tag: $('tag').value})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'не удалось скачать');
+    const badVersion = d.game_version && !d.fits_game;
+    const note = badVersion
+      ? `Внимание: перевод ${esc(d.tag)} собран не под твою игру (${esc(d.game_version)}). ` +
+        `Без перевода останется ${num(d.missing)} строк.`
+      : d.missing
+        ? `${num(d.missing)} строк без перевода — останутся английскими.`
+        : 'Перевод покрывает английский полностью.';
+    res.innerHTML =
+      `Скачано: английский ${(d.english_size/1048576).toFixed(1)} МБ, ` +
+      `русский ${(d.russian_size/1048576).toFixed(1)} МБ (${esc(d.tag)}).<br>` +
+      `<span style="color:var(--${badVersion ? 'warn' : d.missing ? 'muted' : 'ok'})">${note}</span>`;
+    res.classList.add('show');
+    await loadPaths();
+    await loadSource();
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--err)">Ошибка: ${esc(e.message)}</span>`;
+    res.classList.add('show');
+  }
+  btn.disabled = false; btn.textContent = 'Скачать';
+  loadStatus();
+  loadLog();
+});
+
+/* ---------- игра ---------- */
+async function loadGame(post) {
+  const opts = post
+    ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(post)}
+    : {};
+  const g = await (await fetch('/api/game', opts)).json();
+  $('gamePath').value = g.game_dir;
+  $('instLang').checked = g.install_languages;
+
+  const sel = $('branch');
+  sel.innerHTML = g.branches.map(b =>
+    `<option value="${esc(b)}" ${b === g.branch ? 'selected' : ''}>${esc(b)}</option>`).join('')
+    || '<option value="">—</option>';
+
+  const st = $('gameStatus');
+  const ok = g.game_dir_ok && g.branches.length > 0;
+  $('gamePath').classList.toggle('bad', !ok);
+  st.className = 'file-status ' + (ok ? 'ok' : 'bad');
+  st.textContent = !g.game_dir ? 'папка не выбрана'
+    : !g.game_dir_ok ? 'папка не найдена'
+    : g.branches.length === 0 ? 'внутри нет веток игры (LIVE, PTU, HOTFIX)'
+    : `найдено веток: ${g.branches.join(', ')}`;
+  $('install').disabled = !ok;
+}
+
+function saveGame() {
+  return loadGame({
+    game_dir: $('gamePath').value,
+    branch: $('branch').value,
+    install_languages: $('instLang').checked
+  });
+}
+
+$('gameBrowse').addEventListener('click', () =>
+  browseInto('gameBrowse', 'game_dir', async path => {
+    $('gamePath').value = path;
+    await saveGame();
+  }));
+$('gamePath').addEventListener('change', saveGame);
+$('branch').addEventListener('change', saveGame);
+$('instLang').addEventListener('change', saveGame);
+
+$('install').addEventListener('click', async () => {
+  const btn = $('install'), res = $('result');
+  btn.disabled = true; btn.textContent = 'Работаю…';
+  res.classList.remove('show');
+  if (!logOpen) $('logToggle').click();
+  try {
+    const r = await fetch('/api/install', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'не удалось установить');
+    const warn = (d.cfg_status === 'needs_manual' || d.cfg_status === 'conflict');
+    const head = d.mode === 'english'
+      ? `Английский с блюпринтами установлен в <b>${esc($('branch').value)}</b>.`
+      : `Установлено в <b>${esc($('branch').value)}</b>. ` + buildNote(d.build);
+    res.innerHTML = head + '<br>' +
+      (d.backup ? `<span style="color:var(--muted)">Прежний файл сохранён рядом.</span><br>` : '') +
+      `<span style="color:var(--${warn ? 'warn' : 'ok'})">${esc(d.cfg_message)}</span>`;
+    loadSource();
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--err)">Ошибка: ${esc(e.message)}</span>`;
+  }
+  res.classList.add('show');
+  btn.disabled = false; btn.textContent = 'Установить в игру';
+  loadLog();
+});
+
+/* ---------- режимы установки ----------
+   basic   — русские описания (тонкая настройка галочками)
+   full    — полный русский
+   english — английский с блюпринтами, без перевода */
+let mode = 'basic';
+
+function currentMode(profile) {
+  if (profile.english) return 'english';
+  if (profile.full) return 'full';
+  return 'basic';
+}
+
+function applyMode() {
+  document.querySelectorAll('.mode').forEach(b =>
+    b.classList.toggle('active', b.dataset.mode === mode));
+  // Галочки категорий — только для «Только описания».
+  $('overlay').querySelector('.modal').classList.toggle('cats-hidden', mode !== 'basic');
+}
+
+async function openCats() {
+  $('overlay').classList.add('open');
+  const [cats, profile] = await Promise.all([
+    (await fetch('/api/categories')).json(),
+    (await fetch('/api/profile')).json()
+  ]);
+  mode = currentMode(profile);
+  $('cats').innerHTML = cats.map(c => `
+    <label class="cat">
+      <input type="checkbox" data-id="${c.id}" ${c.enabled ? 'checked' : ''}>
+      <div class="cat-body">
+        <div class="cat-title"><span>${esc(c.title)}</span><span class="count" id="cnt-${c.id}">…</span></div>
+        <div class="cat-hint">${esc(c.hint)}</div>
+      </div>
+    </label>`).join('');
+  applyMode();
+  refreshCounts();
+}
+
+async function saveProfile() {
+  const profile = {full: mode === 'full', english: mode === 'english'};
+  $('cats').querySelectorAll('input').forEach(el => profile[el.dataset.id] = el.checked);
+  await fetch('/api/profile', {
+    method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(profile)
+  });
+  refreshCounts();
+  loadLog();
+}
+
+async function refreshCounts() {
+  if (mode === 'english') {
+    $('catsSum').textContent = 'Английский текст с блюпринтами (без перевода)';
+    return;
+  }
+  $('catsSum').textContent = 'считаю…';
+  try {
+    const s = await (await fetch('/api/counts')).json();
+    if (s.error) { $('catsSum').textContent = s.error; return; }
+    $('catsSum').textContent =
+      (mode === 'full' ? 'Полный перевод: ' : 'Будет переведено ') +
+      `${num(s.translated)} из ${num(s.total)} (${s.percent}%)`;
+    $('cats').querySelectorAll('input').forEach(el => {
+      const c = $('cnt-' + el.dataset.id);
+      if (c) c.textContent = num(s.by_category[el.dataset.id] || 0);
+    });
+  } catch (e) { $('catsSum').textContent = 'не удалось посчитать'; }
+}
+
+// Выбор режима кнопками.
+document.querySelectorAll('.mode').forEach(b => b.addEventListener('click', () => {
+  mode = b.dataset.mode;
+  applyMode();
+  saveProfile();   // внутри пересчитает счётчики уже по новому режиму
+}));
+// Галочки: один делегированный листенер, чтобы сброс режима гарантированно
+// происходил ДО сохранения (два листенера на input давали обратный порядок).
+$('cats').addEventListener('change', () => {
+  if (mode !== 'basic') { mode = 'basic'; applyMode(); }
+  saveProfile();
+});
+
+$('openCats').addEventListener('click', openCats);
+const closeCats = () => $('overlay').classList.remove('open');
+$('closeCats').addEventListener('click', closeCats);
+$('closeCats2').addEventListener('click', closeCats);
+$('overlay').addEventListener('click', e => { if (e.target === $('overlay')) closeCats(); });
+
+/* ---------- окно «Настроить перевод» ----------
+   Версия перевода, свои файлы и ручная сборка — всё, что нужно редко.
+   Список версий тянем только при открытии: лишний запрос к GitHub на каждом
+   старте съедал лимит в 60 обращений в час впустую. */
+const closeSetup = () => $('setupOverlay').classList.remove('open');
+$('openSetup').addEventListener('click', () => {
+  $('setupOverlay').classList.add('open');
+  loadPaths();
+  loadSource();
+});
+$('closeSetup').addEventListener('click', closeSetup);
+$('closeSetup2').addEventListener('click', closeSetup);
+$('setupOverlay').addEventListener('click', e => {
+  if (e.target === $('setupOverlay')) closeSetup();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeCats(); closeSetup(); }
+});
+
+/* ---------- лог ---------- */
+$('logToggle').addEventListener('click', () => {
+  logOpen = !logOpen;
+  $('logBody').classList.toggle('open', logOpen);
+  $('logHint').textContent = logOpen ? 'скрыть' : 'показать';
+  if (logOpen) { loadLog(); logTimer = setInterval(loadLog, 2000); }
+  else { clearInterval(logTimer); }
+});
+
+async function loadLog() {
+  const rows = await (await fetch('/api/log')).json();
+  const b = $('logBody');
+  const atBottom = b.scrollTop + b.clientHeight >= b.scrollHeight - 30;
+  b.innerHTML = rows.map(r =>
+    `<div class="le ${r.level}"><span class="t">${r.time}</span><span class="m">${esc(r.text)}</span></div>`
+  ).join('') || '<div class="le"><span class="m">пусто</span></div>';
+  if (atBottom) b.scrollTop = b.scrollHeight;
+}
+
+/* ---------- сборка ---------- */
+function buildNote(d) {
+  const v = d.source ? ` Перевод ${esc(d.source.tag)} от ${esc(d.source.date)}.` : '';
+  return `Переведено <b>${num(d.translated)}</b> из ${num(d.total)} ключей (${d.percent}%).${v}`;
+}
+
+$('build').addEventListener('click', async () => {
+  const btn = $('build'), res = $('result');
+  btn.disabled = true; btn.textContent = 'Собираю…';
+  res.classList.remove('show');
+  // Результат рисуется на основной странице, а её закрывает окно настроек.
+  closeSetup();
+  if (!logOpen) $('logToggle').click();
+
+  try {
+    const r = await fetch('/api/build', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({skip_invalid: true})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'не удалось собрать');
+    res.innerHTML = buildNote(d) + `<br><a href="/api/download">Скачать global.ini</a>
+      <span style="color:var(--muted)"> — или забери из папки output</span>`;
+    loadSource();
+  } catch (e) {
+    res.innerHTML = `<span style="color:var(--err)">Ошибка: ${esc(e.message)}</span>`;
+  }
+  res.classList.add('show');
+  btn.disabled = false; btn.textContent = 'Собрать файл';
+  loadLog();
+});
+
+/* ---------- выход ---------- */
+let closing = false;
+$('quit').addEventListener('click', async () => {
+  if (!confirm('Закрыть программу?')) return;
+  closing = true;
+  clearInterval(logTimer);
+  try { await fetch('/api/quit', {method: 'POST'}); } catch (e) { /* сервер уже умер */ }
+  document.body.innerHTML =
+    '<div class="bye">Программа закрыта.<br>Можешь закрыть эту вкладку.</div>';
+});
+
+/* ---------- сердцебиение ----------
+   Пока вкладка открыта, шлём пинг. Закрыли вкладку — сервер это заметит
+   и выключится сам, а не будет висеть в фоне, держа свои файлы. */
+setInterval(() => {
+  if (!closing) fetch('/api/ping', {method: 'POST'}).catch(() => {});
+}, 3000);
+
+// Закрытие вкладки: sendBeacon уходит даже когда страницу уже выгружают.
+// Перезагрузка шлёт тот же сигнал, но следом новая страница пингует и всё
+// отменяет — поэтому сервер выходит не мгновенно, а через пару секунд тишины.
+window.addEventListener('pagehide', () => {
+  navigator.sendBeacon('/api/closing');
+});
+
+/* ---------- плашка о свежести перевода ----------
+   Программа сама качает свежий перевод при запуске; плашка показывает,
+   на чём это закончилось. Пока проверка идёт — переспрашиваем. */
+const FRESH_LEVEL = {
+  ready: 'ok', stale: 'warn', offline: 'warn', manual: 'warn',
+  error: 'bad', checking: ''
+};
+let freshTimer = null;
+
+async function loadStatus() {
+  let s;
+  try { s = await (await fetch('/api/status')).json(); } catch (e) { return; }
+  $('fresh').className = 'fresh ' + (FRESH_LEVEL[s.state] || '');
+  $('freshText').textContent = s.message;
+  if (s.state !== 'checking' && freshTimer) {
+    clearInterval(freshTimer); freshTimer = null;
+    // Проверка закончилась — пути и версии на странице уже устарели.
+    loadPaths();
+    if (logOpen) loadLog();
+  }
+}
+
+freshTimer = setInterval(loadStatus, 1500);
+
+/* ---------- обновление самой программы ----------
+   Программа не подменяет себя без спроса: показывает плашку с кнопкой.
+   Нажали — качает архив, запускает bat и выходит; bat дожидается выхода
+   (Windows держит exe занятым), копирует новые файлы и запускает обратно. */
+const UPD_LEVEL = {available: 'warn', applying: 'warn', error: 'bad', checking: ''};
+let updTimer = null;
+
+async function loadUpdate() {
+  let u;
+  try { u = await (await fetch('/api/update')).json(); } catch (e) { return; }
+
+  $('appVer').textContent = 'сборка русской локализации Star Citizen · версия ' + u.current;
+
+  // Проверка одноразовая: ответ не изменится сам собой, переспрашивать незачем.
+  if (u.state !== 'checking' && updTimer) { clearInterval(updTimer); updTimer = null; }
+
+  const show = ['available', 'applying', 'error'].includes(u.state);
+  $('appUpd').hidden = !show;
+  if (!show) return;
+
+  $('appUpd').className = 'fresh ' + (UPD_LEVEL[u.state] || '');
+  $('appUpdText').textContent = u.message;
+  // Пока качается — кнопку прячем: второй клик начал бы всё заново.
+  $('doUpdate').hidden = u.state === 'applying';
+  $('doUpdate').textContent = u.state === 'error' ? 'Ещё раз' : 'Обновить';
+}
+
+$('doUpdate').addEventListener('click', async () => {
+  const btn = $('doUpdate');
+  btn.disabled = true; btn.textContent = 'Качаю…';
+  if (!logOpen) $('logToggle').click();
+  try {
+    const r = await fetch('/api/update', {method: 'POST'});
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || 'не удалось обновиться');
+    // Сервер вот-вот выключится — пинги прекращаем, иначе консоль зальёт
+    // ошибками сети на ровном месте.
+    closing = true;
+    clearInterval(logTimer);
+    clearInterval(freshTimer);
+    document.body.innerHTML =
+      '<div class="bye">Качаю версию ' + esc(d.version) + ' и перезапускаюсь.<br>' +
+      'Через несколько секунд откроется новое окно — эту вкладку можно закрыть.</div>';
+  } catch (e) {
+    btn.disabled = false; btn.textContent = 'Ещё раз';
+    loadUpdate();
+    loadLog();
+  }
+});
+
+updTimer = setInterval(loadUpdate, 2000);
+
+loadPaths();
+loadGame();
+loadStatus();
+loadUpdate();
+</script>
+</body>
+</html>

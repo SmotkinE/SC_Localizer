@@ -1,0 +1,19 @@
+# Рабочие данные программы — у каждого свои, в репозитории им не место.
+SC_LOCALIZER/.env
+SC_LOCALIZER/logs/
+SC_LOCALIZER/output/
+SC_LOCALIZER/cache/
+SC_LOCALIZER/profile.json
+SC_LOCALIZER/paths.json
+SC_LOCALIZER/browse_resp.txt
+SC_LOCALIZER/code.txt
+
+# Сборка портабл-версии: результат весит десятки мегабайт и пересобирается
+# из исходников за минуту. Готовые архивы раздаются через Releases.
+PORTABLE/build/
+PORTABLE/dist/
+
+__pycache__/
+*.pyc
+venv/
+.env
