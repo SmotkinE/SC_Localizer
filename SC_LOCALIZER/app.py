@@ -41,6 +41,11 @@ app = Flask(__name__, template_folder=str(Config.RESOURCE_DIR / 'templates'))
 # Флаг, которым программа зовёт саму себя, чтобы показать окно выбора файла.
 FILE_DIALOG_FLAG = '--file-dialog'
 
+# Флаг, который ставит bat при перезапуске после обновления. Браузер тогда
+# не открываем: старая вкладка ждёт ответа сервера и перезагрузится сама,
+# а второе окно поверх неё — лишнее.
+UPDATED_FLAG = '--updated'
+
 # Файлы на 90 тысяч ключей читаются пару секунд — держим в памяти.
 _store: dict = {'en': {}, 'ru': {}, 'en_path': None, 'ru_path': None}
 
@@ -1053,11 +1058,16 @@ def main() -> None:
         webbrowser.open(url)
         return
 
+    just_updated = UPDATED_FLAG in sys.argv
+    if just_updated:
+        log.info('Запуск после обновления, вкладку не открываю')
+
     def open_browser():
         time.sleep(1.5)
         webbrowser.open(url)
 
-    threading.Thread(target=open_browser, daemon=True).start()
+    if not just_updated:
+        threading.Thread(target=open_browser, daemon=True).start()
     # Сторож: закроет программу, когда закроют вкладку в браузере. Иначе
     # сервер висит в фоне и держит свои файлы — как раз то, что мешало пересборке.
     threading.Thread(target=_heartbeat_watchdog, daemon=True).start()

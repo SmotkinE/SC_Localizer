@@ -40,6 +40,10 @@ UPDATE_DIR_NAME = 'sc_localizer_update'
 # Имя bat-файла, который доделывает работу после выхода программы.
 APPLY_BAT = 'apply_update.bat'
 
+# Лог bat-файла. Лежит рядом с временной папкой, а не внутри неё: папку bat
+# в конце удаляет, а открытый файл удалить не даст.
+APPLY_LOG_NAME = 'sc_localizer_update.log'
+
 
 class UpdateError(Exception):
     """Обновление не удалось."""
@@ -162,43 +166,60 @@ def stage_update(release: AppRelease) -> Path:
     return root
 
 
-# Русский текст в bat-файле пришлось бы писать в cp866, поэтому сообщения об
-# ошибке здесь латиницей: файл видит только тот, у кого обновление не доехало,
-# а кракозябры в такой момент помогают меньше всего.
+# Сообщения в bat-файле латиницей: писать их в cp866 ради одного редкого
+# случая не стоит, а кракозябры в момент поломки помогают меньше всего.
 #
 # /E — со всеми подпапками, /IS /IT — перезаписывать даже совпадающие файлы.
 # Без /MIR robocopy ничего лишнего не удаляет, поэтому настройки, cache/
 # и output/ у человека остаются на месте.
-_BAT_TEMPLATE = '''@echo off
+#
+# Две вещи, на которых обновление уже один раз сломалось молча:
+#
+# 1. Пауза сделана через ping, а не timeout: timeout требует настоящую консоль
+#    и без неё падает с 'Input redirection is not supported'.
+# 2. Конвейер `tasklist | find` тоже требует рабочих стандартных потоков.
+#    Запущенный совсем без них (DETACHED_PROCESS и никакого stdout) bat умирал
+#    на первой же строке цикла — файлы не копировались, программа не
+#    возвращалась. Поэтому запускаем с CREATE_NO_WINDOW (консоль есть, но
+#    скрыта) и отдаём вывод в лог-файл, а не в никуда.
+#
+# 3. find зовём по полному пути. Если у человека стоит Git для Windows, его
+#    Unix-ный find оказывается в PATH раньше системного, и цикл ожидания
+#    вместо процессов начинает обходить файлы на дисках.
+#
+# Плюс robocopy получает щедрые повторы: если exe ещё не успел отпустить свои
+# файлы, она дождётся сама, даже если цикл ожидания почему-то отработал рано.
+#
+# Флаг --updated говорит новой копии не открывать вкладку браузера: старая
+# страница сама дождётся ответа сервера и перезагрузится.
+_BAT_TEMPLATE = r'''@echo off
 cd /d "%~dp0"
 
 set TRIES=0
 :wait
-tasklist /FI "IMAGENAME eq {exe}" 2>nul | find /I "{exe}" >nul
+tasklist /FI "IMAGENAME eq {exe}" /NH | "%SystemRoot%\System32\find.exe" /I "{exe}"
 if errorlevel 1 goto copyfiles
 set /a TRIES+=1
 if %TRIES% GEQ 60 goto giveup
-timeout /t 1 /nobreak >nul
+ping -n 2 127.0.0.1 >nul
 goto wait
 
 :copyfiles
-robocopy "{src}" "{dst}" /E /IS /IT /R:3 /W:2 /NFL /NDL /NJH /NJS >nul
+robocopy "{src}" "{dst}" /E /IS /IT /R:20 /W:1 /NFL /NDL /NJH /NJS
 if errorlevel 8 goto giveup
 
-start "" /D "{dst}" "{dst}{sep}{exe}"
+start "" /D "{dst}" "{dst}{sep}{exe}" --updated
 cd /d "%TEMP%"
 rmdir /S /Q "{tmp}" >nul 2>&1
 exit /b 0
 
 :giveup
-echo.
-echo  SC Localizer: update failed.
-echo  New version is here:
-echo    {src}
-echo  Copy files from there into:
-echo    {dst}
-echo.
-pause
+rem Без программы человека не оставляем: поднимаем ту, что была.
+rem Она запускается без --updated, чтобы открылось окно и стало видно,
+rem что всё живо, а рядом лежит записка с причиной.
+> "{dst}{sep}UPDATE_FAILED.txt" echo SC Localizer: update failed. New version is in {src}
+start "" /D "{dst}" "{dst}{sep}{exe}"
+exit /b 1
 '''
 
 
@@ -222,12 +243,19 @@ def apply_update(staged_root: Path) -> None:
                              tmp=str(tmp), sep=os.sep),
         encoding='cp866', errors='replace')
 
-    # DETACHED_PROCESS обязателен: иначе bat умрёт вместе с программой,
-    # выхода которой он как раз и ждёт, и обновление не доедет.
+    # CREATE_NO_WINDOW, а не DETACHED_PROCESS: чёрного окна так же нет, но
+    # консоль у процесса есть, и cmd-конвейеры работают. С DETACHED_PROCESS
+    # bat умирал молча на первой же команде с конвейером.
+    #
+    # Вывод пишем в файл: без него не разобрать, почему обновление не доехало,
+    # а окна, куда посмотреть, у нас нет. Файл открываем и не закрываем —
+    # программа сейчас выйдет, и дескриптор достанется bat-у.
+    apply_log = Path(tempfile.gettempdir()) / APPLY_LOG_NAME
+    out = open(apply_log, 'wb')
     subprocess.Popen(
         ['cmd', '/c', str(bat)],
         cwd=str(tmp),
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
+        stdout=out, stderr=subprocess.STDOUT,
+        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
     )
-    log.info('Запущен %s, жду выхода программы', bat)
+    log.info('Запущен %s, жду выхода программы. Его лог: %s', bat, apply_log)

@@ -764,20 +764,46 @@ $('doUpdate').addEventListener('click', async () => {
     const r = await fetch('/api/update', {method: 'POST'});
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'не удалось обновиться');
-    // Сервер вот-вот выключится — пинги прекращаем, иначе консоль зальёт
-    // ошибками сети на ровном месте.
-    closing = true;
     clearInterval(logTimer);
     clearInterval(freshTimer);
     document.body.innerHTML =
-      '<div class="bye">Качаю версию ' + esc(d.version) + ' и перезапускаюсь.<br>' +
-      'Через несколько секунд откроется новое окно — эту вкладку можно закрыть.</div>';
+      '<div class="bye">Обновляюсь до версии ' + esc(d.version) + '…<br>' +
+      'Страница обновится сама, закрывать ничего не надо.</div>';
+    waitForRestart();
   } catch (e) {
     btn.disabled = false; btn.textContent = 'Ещё раз';
     loadUpdate();
     loadLog();
   }
 });
+
+/* Программа сейчас выключится, подменит свои файлы и поднимется заново.
+   Ждём этого прямо здесь и перезагружаем страницу — так обновление выглядит
+   как обычное обновление вкладки, без второго окна и без «закрой эту». */
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function serverAlive() {
+  try {
+    const r = await fetch('/api/ping', {method: 'POST', cache: 'no-store'});
+    return r.ok || r.status === 204;
+  } catch (e) { return false; }
+}
+
+async function waitForRestart() {
+  // Сначала дожидаемся, пока старый сервер замолчит. Без этого шага мы бы
+  // увидели ответ ещё живой старой копии и перезагрузились раньше времени.
+  for (let i = 0; i < 60 && await serverAlive(); i++) await sleep(500);
+  // Теперь ждём новый. Копирование 30 МБ и запуск — это секунды, но берём
+  // запас: на медленном диске с антивирусом бывает и дольше.
+  for (let i = 0; i < 180; i++) {
+    if (await serverAlive()) { location.reload(); return; }
+    await sleep(1000);
+  }
+  document.body.innerHTML =
+    '<div class="bye">Программа не поднялась за три минуты.<br>' +
+    'Запусти SC_Localizer.exe вручную — рядом с ним будет файл ' +
+    'UPDATE_FAILED.txt, если обновление сорвалось.</div>';
+}
 
 updTimer = setInterval(loadUpdate, 2000);
 
