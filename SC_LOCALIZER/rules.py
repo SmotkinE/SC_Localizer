@@ -118,6 +118,27 @@ class Category:
     allow_names: bool = False
 
 
+# StarStrings подменяет несколько служебных строк главного экрана своими
+# заметками: версию патча — на «MrKraken Community Translated Version», подпись
+# кнопки «Играть» — на «Remember: Update StarStrings...», а описание вселенной —
+# на инструкцию про обновление пака. Игроку, который поставил русификатор,
+# это не нужно: он и так знает, откуда взял файл.
+#
+# Список именно перечислением, а не по маске: маска на frontend_* утащила бы
+# заодно и обычные подписи кнопок, которые мы намеренно держим английскими.
+_STARSTRINGS_NOTICE_KEYS = frozenset({
+    'frontend_pu_version',              # «Alpha 4.10: ... | MrKraken Community Translated Version»
+    'frontend_play_star_citizen',       # «Remember: Update StarStrings if you see broken text!!!»
+    'ui_pregame_persistentuniverse_desc',  # абзац про mrkraken.space/starstrings
+})
+
+
+def _m_starstrings_notice(k: str, v: str = '') -> bool:
+    """Служебные надписи StarStrings на главном экране."""
+    # Хвост ',P' — вариант строки, к смыслу ключа не относится.
+    return _SUFFIX_RX.sub('', k.strip()).lower() in _STARSTRINGS_NOTICE_KEYS
+
+
 def _m_subtitles(k: str, v: str = '') -> bool:
     """Реплики NPC и субтитры. PU_ и PH_PU_ — озвученные диалоги, Dlg_ — диалоговые строки."""
     toks = _tokens_lower(k)
@@ -278,6 +299,10 @@ _NON_MISSION_PREFIXES = {
 # Поэтому узкие категории идут раньше широких, а 'other_desc' — последним,
 # иначе он забирал бы себе описания кораблей, предметов и организаций.
 CATEGORIES: list[Category] = [
+    # Первой: перебивает всё остальное, что могло бы зацепить эти три ключа.
+    Category('starstrings_notice', 'Служебные надписи StarStrings',
+             'Главный экран: версия, подпись кнопки «Играть» и описание вселенной',
+             _m_starstrings_notice),
     Category('journal', 'Записи в журнале',
              'Journal*, ReputationJournal*',
              _m_journal, allow_names=True),
