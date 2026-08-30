@@ -978,7 +978,7 @@ def api_log():
 
 # Отметка последней активности страницы. Пока вкладка открыта, она шлёт пинги;
 # пропали пинги — значит её закрыли, и держать сервер незачем.
-_last_ping = {'at': time.monotonic()}
+_last_ping = {'at': time.monotonic(), 'seen': False}
 _HEARTBEAT_TIMEOUT = 8      # молчит дольше — считаем, что вкладку закрыли
 _HEARTBEAT_GRACE = 20       # но первые секунды после старта не трогаем
 
@@ -986,6 +986,7 @@ _HEARTBEAT_GRACE = 20       # но первые секунды после ста
 @app.route('/api/ping', methods=['POST'])
 def api_ping():
     _last_ping['at'] = time.monotonic()
+    _last_ping['seen'] = True
     return '', 204
 
 
@@ -1091,15 +1092,33 @@ def main() -> None:
         return
 
     just_updated = UPDATED_FLAG in sys.argv
-    if just_updated:
-        log.info('Запуск после обновления, вкладку не открываю')
 
     def open_browser():
         time.sleep(1.5)
         webbrowser.open(url)
 
-    if not just_updated:
-        threading.Thread(target=open_browser, daemon=True).start()
+    def wait_for_old_page():
+        """
+        После обновления окно не открываем: старая страница ждёт перезапуска
+        и перезагрузится сама. Но если она не вернулась — вкладку закрыли или
+        ушли с неё, — то без окна программу через полминуты выключит сторож,
+        а человек останется смотреть на мёртвую страницу. Поэтому не дождались
+        — открываем сами, до того как сторож сработает.
+        """
+        log.info('Запуск после обновления, жду возвращения старой страницы')
+        time.sleep(_HEARTBEAT_GRACE - 5)
+        if _last_ping['seen']:
+            log.info('Страница вернулась сама')
+            return
+        log.info('Страница не вернулась, открываю окно')
+        # Отодвигаем сторожа: он считает от последнего пинга, а пингов ещё
+        # не было ни одного. Без этого браузер может не успеть открыться
+        # и программа выключится ровно в тот момент, когда окно появляется.
+        _last_ping['at'] = time.monotonic()
+        webbrowser.open(url)
+
+    threading.Thread(target=wait_for_old_page if just_updated else open_browser,
+                     daemon=True).start()
     # Сторож: закроет программу, когда закроют вкладку в браузере. Иначе
     # сервер висит в фоне и держит свои файлы — как раз то, что мешало пересборке.
     threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
