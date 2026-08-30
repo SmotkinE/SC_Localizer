@@ -65,6 +65,52 @@ class GitHubError(Exception):
     """Не удалось получить данные с GitHub."""
 
 
+def _minutes_word(n: int) -> str:
+    """1 минуту, 2 минуты, 5 минут — иначе фраза выглядит машинной."""
+    if 11 <= n % 100 <= 14:
+        return 'минут'
+    tail = n % 10
+    if tail == 1:
+        return 'минуту'
+    if tail in (2, 3, 4):
+        return 'минуты'
+    return 'минут'
+
+
+def _rate_limit_hint(response: requests.Response) -> str:
+    """
+    Через сколько ограничение снимется.
+
+    GitHub кладёт время сброса в тот же ответ, которым отказывает:
+    X-RateLimit-Reset — момент сброса часового лимита (unix-время),
+    Retry-After — пауза в секундах при коротких ограничениях. Отдельный
+    запрос к /rate_limit ради этого не нужен, да и делать его в момент,
+    когда запросы кончились, было бы странно.
+    """
+    left = None
+    retry_after = response.headers.get('Retry-After')
+    if retry_after:
+        try:
+            left = int(retry_after)
+        except ValueError:
+            left = None
+    if left is None:
+        reset = response.headers.get('X-RateLimit-Reset')
+        try:
+            left = int(reset) - int(time.time())
+        except (TypeError, ValueError):
+            left = None
+
+    if left is None:
+        return 'Подожди немного и попробуй снова.'
+    if left <= 0:
+        return 'Ограничение уже должно было сняться, попробуй снова.'
+    if left < 60:
+        return f'Попробуй снова через {left} с.'
+    minutes = (left + 59) // 60          # округляем вверх: лучше подождать лишнее
+    return f'Попробуй снова через {minutes} {_minutes_word(minutes)}.'
+
+
 def http_get(url: str, *, timeout: int = TIMEOUT, stream: bool = False) -> requests.Response:
     """
     GET с повторами.
@@ -83,7 +129,7 @@ def http_get(url: str, *, timeout: int = TIMEOUT, stream: bool = False) -> reque
                 raise GitHubError(f'Не найдено на GitHub: {url}')
             if r.status_code == 403 and 'rate limit' in r.text.lower():
                 raise GitHubError('GitHub временно ограничил число запросов. '
-                                  'Подожди немного и попробуй снова.')
+                                  + _rate_limit_hint(r))
             r.raise_for_status()
             return r
         except (requests.RequestException, GitHubError) as e:
