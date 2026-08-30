@@ -283,6 +283,56 @@ def _m_lore_text(k: str, v: str = '') -> bool:
     return any(t in ('body', 'bodytext', 'searchbody', 'fluff', 'flufftext', 'datapad') for t in toks)
 
 
+# Часть описаний контрактов не имеет в ключе ни `desc`, ни чего-либо ещё, за что
+# можно зацепиться: Covalex_HaulCargo_SingleToMulti_RefinedOre — обычное письмо
+# заказчика, а по имени ключа этого не видно. Соседний
+# Covalex_HaulCargo_SingleToMulti_desc_RefinedOre_Mixed отличается одним токеном
+# и переводился, из-за чего в списке контрактов часть писем была русской,
+# а часть английской.
+#
+# Поэтому последняя категория смотрит не на ключ, а на сам текст: если это
+# длинное письмо с абзацами — переводим, кто бы его ни прислал.
+
+# Проза — это несколько предложений с абзацами. Порог намеренно высокий:
+# подписи кнопок и коды ошибок в двух словах сюда не попадут.
+OTHER_PROSE_ID = 'other_prose'
+
+_PROSE_MIN_LEN = 200
+_PROSE_MIN_SENTENCES = 3
+
+
+def _looks_like_prose(value: str) -> bool:
+    if len(value) < _PROSE_MIN_LEN or '\\n' not in value:
+        return False
+    return sum(value.count(c) for c in '.!?') >= _PROSE_MIN_SENTENCES
+
+
+# На экранах в мире висит декоративный «код»: namespace Hacking { ... },
+# hashdb = test_password_hash(input); и дампы логов. По длине и точкам это
+# проза, но читать там нечего, и переводить нечего тоже.
+#
+# Считаем только те знаки, которых не бывает в письме. Скобки, < > и | не берём:
+# ими размечены <EM4> и ~mission(Location|Address) в обычных описаниях.
+_CODE_MARKS_LIMIT = 5
+
+
+def _looks_like_code(value: str) -> bool:
+    marks = (value.count('{') + value.count('}') + value.count(';')
+             + value.count('=') + value.count('//'))
+    return marks >= _CODE_MARKS_LIMIT
+
+
+def _m_other_prose(k: str, v: str = '') -> bool:
+    """Длинный связный текст, не попавший ни в одну категорию по имени ключа."""
+    if not v or has_name_token(k):
+        return False
+    if not _looks_like_prose(v) or _looks_like_code(v):
+        return False
+    # Ключ, у которого есть своя категория, отдаём ей — иначе её галочка
+    # перестанет что-либо значить: выключил «Датапады», а они всё равно русские.
+    return not any(c.match(k, v) for c in CATEGORIES if c.id != OTHER_PROSE_ID)
+
+
 # Префиксы, которые сами по себе не миссии — их описания разбираются своими
 # категориями, а хвост _long/_short у них означает не цель, а сокращение
 # ('operatorMode_Turret_Short' = 'TUR') или название ('ea_ui_map_..._Short').
@@ -341,14 +391,19 @@ CATEGORIES: list[Category] = [
              'Трекер справа и метки в космосе. Выключено — на ХУДе английский',
              _m_mission_obj_hud, enabled_by_default=False),
     Category('hints', 'Подсказки и обучение',
-             'Hints_* — длинные пояснения механик',
-             _m_hints, enabled_by_default=False),
+             'Hints_* — пояснения механик и обучающие подсказки',
+             _m_hints),
     Category('lore_text', 'Датапады, вывески, записки',
-             '*_body, *_BodyText, *_Fluff*',
-             _m_lore_text, enabled_by_default=False),
+             '*_body, *_BodyText, *_Fluff* — тексты с экранов и вывесок',
+             _m_lore_text),
     Category('other_desc', 'Описания миссий и прочие тексты',
              'Любой ключ с токеном Desc, не попавший в категории выше',
              _m_mission_desc),
+    # Последняя намеренно: разбирает то, что осталось, и смотрит на текст,
+    # а не на имя ключа.
+    Category(OTHER_PROSE_ID, 'Длинные тексты без приметы в ключе',
+             'Письма заказчиков и прочая проза, которую по имени ключа не опознать',
+             _m_other_prose),
 ]
 
 CATEGORY_BY_ID = {c.id: c for c in CATEGORIES}
