@@ -532,10 +532,14 @@ def startup_check() -> None:
         has_cache = (Path(current['english']).is_file()
                      and Path(current['russian']).is_file())
         if has_cache:
+            # Причину показываем прямо в плашке, а не только в логе. «GitHub
+            # недоступен» читается как «нет интернета», хотя чаще всего это
+            # исчерпанный лимит запросов — и тогда человеку надо всего лишь
+            # подождать, а не чинить сеть.
             _startup.update(state='offline', tag=current['ru_tag'],
-                            message=f'GitHub недоступен. Работаю с тем, '
-                                    f'что скачано раньше ({current["ru_tag"] or "локальные файлы"}).')
-            ui_log(f'GitHub недоступен ({e}), беру ранее скачанное', 'warn')
+                            message=f'{e} Пока работаю с тем, что скачано '
+                                    f'раньше ({current["ru_tag"] or "локальные файлы"}).')
+            ui_log(f'{e} Беру ранее скачанное', 'warn')
         else:
             _startup.update(state='error', message=str(e))
             ui_log(str(e), 'error')
