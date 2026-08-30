@@ -174,13 +174,6 @@
       <button id="gameBrowse">Обзор…</button>
     </div>
     <div class="file-status" id="gameStatus"></div>
-    <label class="cat" style="padding-left:0">
-      <input type="checkbox" id="instLang">
-      <div class="cat-body">
-        <div class="cat-hint">Ставить languages.ini — в меню игры язык будет
-          называться «Русский» вместо «Korean». На перевод не влияет.</div>
-      </div>
-    </label>
   </div>
 
   <div class="actions">
@@ -463,7 +456,6 @@ async function loadGame(post) {
     : {};
   const g = await (await fetch('/api/game', opts)).json();
   $('gamePath').value = g.game_dir;
-  $('instLang').checked = g.install_languages;
 
   const sel = $('branch');
   sel.innerHTML = g.branches.map(b =>
@@ -484,8 +476,7 @@ async function loadGame(post) {
 function saveGame() {
   return loadGame({
     game_dir: $('gamePath').value,
-    branch: $('branch').value,
-    install_languages: $('instLang').checked
+    branch: $('branch').value
   });
 }
 
@@ -496,7 +487,6 @@ $('gameBrowse').addEventListener('click', () =>
   }));
 $('gamePath').addEventListener('change', saveGame);
 $('branch').addEventListener('change', saveGame);
-$('instLang').addEventListener('change', saveGame);
 
 $('install').addEventListener('click', async () => {
   const btn = $('install'), res = $('result');

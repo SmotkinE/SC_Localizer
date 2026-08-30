@@ -32,7 +32,6 @@ EN_PATH_SUFFIX = 'english/global.ini'
 # --- Русский: StarCitizenRu ---
 RU_REPO = 'n1ghter/StarCitizenRu'
 RU_PATH = 'data/Localization/korean_(south_korea)/global.ini'
-RU_LANGUAGES_PATH = 'data/languages.ini'
 RU_INDEX_ASSET = 'index.txt'
 
 API = 'https://api.github.com'
@@ -258,13 +257,6 @@ def download_russian(tag: str, dest: Path) -> int:
     index = russian_index(tag)
     size, md5 = index.get(RU_PATH, (None, None))
     url = f'{RAW}/{RU_REPO}/{tag}/{RU_PATH}'
-    return download_file(url, dest, expected_size=size, expected_md5=md5)
-
-
-def download_languages(tag: str, dest: Path) -> int:
-    index = russian_index(tag)
-    size, md5 = index.get(RU_LANGUAGES_PATH, (None, None))
-    url = f'{RAW}/{RU_REPO}/{tag}/{RU_LANGUAGES_PATH}'
     return download_file(url, dest, expected_size=size, expected_md5=md5)
 
 

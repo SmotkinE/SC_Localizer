@@ -78,7 +78,6 @@ _PATH_DEFAULTS = {
     'russian': lambda: _default_ini(Config.RUSSIAN_INI),
     'game_dir': lambda: '',
     'branch': lambda: '',
-    'install_languages': lambda: False,
     # Откуда берём файлы: 'github[:<тег>]' или 'manual'.
     # По умолчанию github: свежая установка обязана работать по одной кнопке,
     # без похода в спойлер. С 'manual' здесь первый запуск падал с «файл
@@ -101,7 +100,6 @@ def load_paths() -> dict:
     for key, default in _PATH_DEFAULTS.items():
         value = saved.get(key)
         result[key] = value if value not in (None, '') else default()
-    result['install_languages'] = bool(saved.get('install_languages', False))
     return result
 
 
@@ -741,8 +739,7 @@ def api_game():
         data = request.get_json(silent=True) or {}
         game_dir = (data.get('game_dir') or '').strip()
         branch = (data.get('branch') or '').strip()
-        install_languages = bool(data.get('install_languages', False))
-        save_paths(game_dir=game_dir, branch=branch, install_languages=install_languages)
+        save_paths(game_dir=game_dir, branch=branch)
 
     game_dir, branches, branch = _autodetect_game()
 
@@ -751,7 +748,6 @@ def api_game():
         'game_dir_ok': bool(game_dir) and Path(game_dir).is_dir(),
         'branches': branches,
         'branch': branch,
-        'install_languages': load_paths()['install_languages'],
     })
 
 
@@ -782,7 +778,7 @@ def api_install():
         return jsonify({'error': 'Сборка не создала файл'}), 400
 
     ui_log(f'Устанавливаю в {branch}...')
-    result = install(Path(game_dir) / branch, source, paths['install_languages'])
+    result = install(Path(game_dir) / branch, source)
 
     for m in result.messages:
         ui_log(m, 'warn' if result.cfg_status in ('needs_manual', 'conflict') and m == result.cfg_message else 'info')

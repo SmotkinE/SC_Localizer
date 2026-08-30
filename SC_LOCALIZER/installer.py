@@ -26,12 +26,6 @@ KNOWN_BRANCHES = ('LIVE', 'PTU', 'EPTU', 'HOTFIX', 'TECH-PREVIEW')
 CFG_LANGUAGE_LINE = f'g_language = {LOCALE_DIR}'
 CFG_AUDIO_LINE = 'g_languageAudio = english'
 
-# Содержимое data/languages.ini. Меняет надпись в меню игры с 'Korean'
-# на 'Русский'. На работу перевода не влияет, чисто косметика.
-# Файл взят из репозитория перевода; когда появится загрузка с GitHub,
-# будем брать оттуда, а не отсюда.
-LANGUAGES_INI = 'english=Английский\nkorean_(south_korea)=Русский\n'
-
 # Строка вида "g_language = korean_(south_korea)" с любыми пробелами
 _CFG_LANG_RX = re.compile(r'^\s*g_language\s*=\s*(\S+)', re.I | re.M)
 
@@ -254,12 +248,13 @@ def install_english(branch_dir: Path, source_ini: Path) -> InstallResult:
 
 
 def install(branch_dir: Path, source_ini: Path,
-            install_languages: bool = False) -> InstallResult:
+            ) -> InstallResult:
     """
     Кладёт собранный global.ini в игру и настраивает user.cfg.
 
-    install_languages — положить ещё и languages.ini: он меняет надпись
-    в меню игры с 'Korean' на 'Русский'. На работу перевода не влияет.
+    Язык прописывается сам, строкой g_language в user.cfg, поэтому в меню
+    выбора языка игрок не заходит — и как там подписана корейская локаль,
+    значения не имеет.
     """
     result = InstallResult()
 
@@ -285,11 +280,6 @@ def install(branch_dir: Path, source_ini: Path,
     result.installed_to = str(target)
     result.messages.append(f'Установлено: {target}')
     log.info('Локализация установлена: %s', target)
-
-    if install_languages:
-        lang_target = branch_dir / 'data' / 'languages.ini'
-        lang_target.write_text(LANGUAGES_INI, encoding='utf-8')
-        result.messages.append('languages.ini установлен — в меню язык будет «Русский»')
 
     result.cfg_status, result.cfg_message = _handle_user_cfg(branch_dir)
     result.messages.append(result.cfg_message)
