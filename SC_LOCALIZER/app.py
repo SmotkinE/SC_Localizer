@@ -27,7 +27,8 @@ from ini_io import load_ini, load_overrides
 from installer import find_branches, find_game_dirs, game_version, install, install_english
 from logger import get_logger
 from merger import merge
-from rules import CATEGORIES, ENGLISH_ID, FULL_ID, classify, default_profile
+from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, classify,
+                   default_profile, defaults_changed_since)
 from updater import (UPDATE_REPO, AppRelease, UpdateError, apply_update, is_newer,
                      latest_release, stage_update, updates_supported)
 from version import APP_VERSION
@@ -118,21 +119,52 @@ def save_paths(**values) -> None:
 
 # ---------- профиль категорий ----------
 
+# Версия умолчаний, которой записан файл. Профили старых сборок её не имеют —
+# считаем такие первой версией.
+PROFILE_VERSION_KEY = '_defaults_version'
+
+
 def load_profile() -> dict[str, bool]:
-    if Config.PROFILE_FILE.exists():
-        try:
-            saved = json.loads(Config.PROFILE_FILE.read_text(encoding='utf-8'))
-            profile = default_profile()
-            profile.update({k: bool(v) for k, v in saved.items() if k in profile})
-            return profile
-        except (json.JSONDecodeError, OSError) as e:
-            log.warning('Не удалось прочитать профиль, беру значения по умолчанию: %s', e)
-    return default_profile()
+    if not Config.PROFILE_FILE.exists():
+        return default_profile()
+
+    try:
+        saved = json.loads(Config.PROFILE_FILE.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning('Не удалось прочитать профиль, беру значения по умолчанию: %s', e)
+        return default_profile()
+
+    profile = default_profile()
+    profile.update({k: bool(v) for k, v in saved.items() if k in profile})
+
+    # Сохранённый выбор перебивает умолчания — иначе настройки сбрасывались бы
+    # при каждом обновлении. Но у категорий, которым умолчание меняли уже после
+    # записи этого файла, сохранённое значение человек сознательно не выбирал:
+    # оно просто досталось от старой сборки. Такие категории один раз
+    # выравниваем по новому умолчанию.
+    try:
+        was = int(saved.get(PROFILE_VERSION_KEY, 1))
+    except (TypeError, ValueError):
+        was = 1
+
+    changed = defaults_changed_since(was)
+    if changed:
+        fresh = default_profile()
+        for cid in changed:
+            if cid in profile:
+                profile[cid] = fresh[cid]
+        log.info('Профиль был версии %d, обновил умолчания у %s',
+                 was, ', '.join(sorted(changed)))
+        save_profile(profile)
+
+    return profile
 
 
 def save_profile(profile: dict[str, bool]) -> None:
+    data = dict(profile)
+    data[PROFILE_VERSION_KEY] = DEFAULTS_VERSION
     Config.PROFILE_FILE.write_text(
-        json.dumps(profile, ensure_ascii=False, indent=2), encoding='utf-8'
+        json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8'
     )
 
 
