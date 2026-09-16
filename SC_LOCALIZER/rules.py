@@ -442,6 +442,7 @@ def default_profile() -> dict[str, bool]:
     profile = {c.id: c.enabled_by_default for c in CATEGORIES}
     profile[FULL_ID] = False      # полный русский — выкл
     profile[ENGLISH_ID] = False   # английский с блюпринтами — выкл
+    profile[ORIGINAL_ID] = False  # оригинал игры — выкл
     return profile
 
 
@@ -454,11 +455,13 @@ class Decision:
 
 
 # Особые режимы (не категории, а флаги в профиле):
-#   full    — перевести всё, что переведено, включая интерфейс и названия;
-#   english — вообще не переводить, поставить английский StarStrings с блюпринтами.
-# english обрабатывается на уровне установки, до classify сюда не доходит.
+#   full     — перевести всё, что переведено, включая интерфейс и названия;
+#   english  — вообще не переводить, поставить английский StarStrings с блюпринтами;
+#   original — ничего не ставить, убрать наши файлы и вернуть игре родной текст.
+# english и original обрабатываются на уровне установки, до classify не доходят.
 FULL_ID = 'full'
 ENGLISH_ID = 'english'
+ORIGINAL_ID = 'original'
 
 
 def classify(key: str, profile: dict[str, bool], en_value: str = '') -> Decision:

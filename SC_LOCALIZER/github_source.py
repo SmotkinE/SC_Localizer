@@ -17,6 +17,7 @@ from pathlib import Path
 
 import requests
 
+from installer import tag_fits_game
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -232,12 +233,20 @@ def pick_release(releases: list['Release'], game_version: str = '') -> 'Release 
     Релизы приходят от новых к старым. Если версия игры известна — берём
     свежайший под неё: самый новый вообще может быть уже под следующий патч,
     и тогда часть строк останется без перевода.
+
+    Сначала ищем точное совпадение версии, и только потом — любой релиз той же
+    серии. Игра в манифесте округляет свою версию (4.10.1 показывает как
+    4.10.0), поэтому серия — рабочий запасной вариант, но когда релиз ровно
+    под нашу версию существует, он всё-таки точнее.
     """
     if not releases:
         return None
     if game_version:
         for r in releases:
             if r.tag.startswith(game_version + '-'):
+                return r
+        for r in releases:
+            if tag_fits_game(r.tag, game_version):
                 return r
     return releases[0]
 

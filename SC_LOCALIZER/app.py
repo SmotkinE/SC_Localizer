@@ -24,11 +24,12 @@ from file_dialog import run_dialog_to_file
 from github_source import (EN_BRANCH, GitHubError, download_english, download_russian,
                            english_version, pick_release, russian_releases)
 from ini_io import load_ini, load_overrides
-from installer import find_branches, find_game_dirs, game_version, install, install_english
+from installer import (find_branches, find_game_dirs, game_version, install,
+                       install_english, restore_original, tag_fits_game)
 from logger import get_logger
 from merger import merge
-from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, classify,
-                   default_profile, defaults_changed_since)
+from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, ORIGINAL_ID,
+                   classify, default_profile, defaults_changed_since)
 from updater import (UPDATE_REPO, AppRelease, UpdateError, apply_update, is_newer,
                      latest_release, stage_update, updates_supported)
 from version import APP_VERSION
@@ -348,11 +349,18 @@ def _autodetect_game() -> tuple[str, list[str], str]:
 
 
 def _game_version_short() -> str:
-    """Версия игры вида '4.9.0' — с ней сверяются теги релизов перевода."""
-    paths = load_paths()
-    if not paths['game_dir'] or not paths['branch']:
+    """
+    Версия игры вида '4.9.0' — с ней сверяются теги релизов перевода.
+
+    Ветку спрашиваем у автоопределения, а не у сохранённых путей: игрок мог
+    сидеть на HOTFIX, который после патча исчез, и в файле осталось имя
+    несуществующей папки. Тогда версия не читалась, а без неё подходящими не
+    считались вообще никакие релизы — все были помечены «не под твою игру».
+    """
+    game_dir, _branches, branch = _autodetect_game()
+    if not game_dir or not branch:
         return ''
-    v = game_version(Path(paths['game_dir']) / paths['branch'])
+    v = game_version(Path(game_dir) / branch)
     return v.short if v else ''
 
 
@@ -378,8 +386,8 @@ def api_source():
         result['releases'] = [
             {
                 'tag': r.tag, 'date': r.date, 'name': r.name, 'prerelease': r.prerelease,
-                # Тег вида 4.9.0-v112 подходит игре версии 4.9.0
-                'fits_game': bool(game_ver) and r.tag.startswith(game_ver + '-'),
+                # Тег вида 4.10.1-v126 подходит игре серии 4.10
+                'fits_game': tag_fits_game(r.tag, game_ver),
             }
             for r in russian_releases()
         ]
@@ -486,7 +494,7 @@ def ensure_fresh_sources(force: bool = False) -> dict:
     save_paths(english=str(en_dest), russian=str(ru_dest),
                source=f'github:{chosen.tag}', ru_tag=chosen.tag)
 
-    fits = bool(game_ver) and chosen.tag.startswith(game_ver + '-')
+    fits = tag_fits_game(chosen.tag, game_ver)
     if game_ver and not fits:
         ui_log(f'Под твою игру ({game_ver}) перевода пока нет, '
                f'беру ближайший: {chosen.tag}', 'warn')
@@ -735,7 +743,7 @@ def api_fetch():
     missing = len(en_keys - ru_keys)
 
     game_ver = _game_version_short()
-    fits = bool(game_ver) and tag.startswith(game_ver + '-')
+    fits = tag_fits_game(tag, game_ver)
 
     if game_ver and not fits:
         ui_log(f'ВНИМАНИЕ: перевод {tag} собран не под твою версию игры ({game_ver}). '
@@ -794,7 +802,13 @@ def api_install():
     if not game_dir or not branch:
         return jsonify({'error': 'Не выбрана папка игры или ветка'}), 400
 
-    if load_profile().get(ENGLISH_ID):
+    profile = load_profile()
+    # Оригинал — раньше всех: он ничего не качает и не собирает, а только
+    # убирает наше из игры. Проверять для него версию перевода незачем.
+    if profile.get(ORIGINAL_ID):
+        return _restore_original_mode(Path(game_dir) / branch)
+
+    if profile.get(ENGLISH_ID):
         return _install_english_mode(Path(game_dir) / branch)
 
     # Собираем прямо здесь: заставлять человека жать две кнопки подряд, чтобы
@@ -825,6 +839,24 @@ def api_install():
         'cfg_message': result.cfg_message,
         'messages': result.messages,
         'build': build,
+    })
+
+
+def _restore_original_mode(branch_dir: Path):
+    """Режим «оригинал игры»: убираем свои файлы, ничего не ставим."""
+    ui_log(f'Возвращаю оригинал в {branch_dir.name}...')
+    result = restore_original(branch_dir)
+    for m in result.messages:
+        ui_log(m, 'warn' if result.cfg_status in ('needs_manual', 'conflict')
+                          and m == result.cfg_message else 'info')
+    if not result.ok:
+        return jsonify({'error': '; '.join(result.messages)}), 400
+    return jsonify({
+        'ok': True, 'mode': 'original',
+        'backup': result.backup,
+        'cfg_status': result.cfg_status,
+        'cfg_message': result.cfg_message,
+        'messages': result.messages,
     })
 
 
@@ -882,7 +914,9 @@ def api_profile():
     profile = default_profile()
     profile.update({k: bool(v) for k, v in incoming.items() if k in profile})
     save_profile(profile)
-    if profile.get(ENGLISH_ID):
+    if profile.get(ORIGINAL_ID):
+        ui_log('Режим: оригинал игры (перевод будет убран)')
+    elif profile.get(ENGLISH_ID):
         ui_log('Режим: английский с блюпринтами (без перевода)')
     elif profile.get(FULL_ID):
         ui_log('Режим: полный русский (всё, что переведено)')

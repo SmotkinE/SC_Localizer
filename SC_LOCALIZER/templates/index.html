@@ -215,6 +215,10 @@
         <b>Английский с блюпринтами</b>
         <span>Без перевода. Английский текст, где в описания контрактов добавлены чертежи (blueprints).</span>
       </button>
+      <button class="mode" data-mode="original">
+        <b>Оригинал игры</b>
+        <span>Убрать перевод совсем и вернуть родной текст игры. Пригодится, когда вышел патч, а перевода под него ещё нет.</span>
+      </button>
     </div>
     <div class="modal-note" id="catsHint">Тонкая настройка режима «Только описания»:</div>
     <div class="modal-body" id="cats"></div>
@@ -498,7 +502,9 @@ $('install').addEventListener('click', async () => {
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || 'не удалось установить');
     const warn = (d.cfg_status === 'needs_manual' || d.cfg_status === 'conflict');
-    const head = d.mode === 'english'
+    const head = d.mode === 'original'
+      ? `Перевод убран из <b>${esc($('branch').value)}</b> — игра снова на своём тексте.`
+      : d.mode === 'english'
       ? `Английский с блюпринтами установлен в <b>${esc($('branch').value)}</b>.`
       : `Установлено в <b>${esc($('branch').value)}</b>. ` + buildNote(d.build);
     res.innerHTML = head + '<br>' +
@@ -509,25 +515,32 @@ $('install').addEventListener('click', async () => {
     res.innerHTML = `<span style="color:var(--err)">Ошибка: ${esc(e.message)}</span>`;
   }
   res.classList.add('show');
-  btn.disabled = false; btn.textContent = 'Установить в игру';
+  btn.disabled = false; btn.textContent = installLabel();
   loadLog();
 });
 
 /* ---------- режимы установки ----------
    basic   — русские описания (тонкая настройка галочками)
    full    — полный русский
-   english — английский с блюпринтами, без перевода */
+   english — английский с блюпринтами, без перевода
+   original — убрать всё наше, вернуть родной текст игры */
 let mode = 'basic';
 
 function currentMode(profile) {
+  if (profile.original) return 'original';
   if (profile.english) return 'english';
   if (profile.full) return 'full';
   return 'basic';
 }
 
+function installLabel() {
+  return mode === 'original' ? 'Вернуть оригинал' : 'Установить в игру';
+}
+
 function applyMode() {
   document.querySelectorAll('.mode').forEach(b =>
     b.classList.toggle('active', b.dataset.mode === mode));
+  $('install').textContent = installLabel();
   // Галочки категорий — только для «Только описания».
   $('overlay').querySelector('.modal').classList.toggle('cats-hidden', mode !== 'basic');
 }
@@ -552,7 +565,8 @@ async function openCats() {
 }
 
 async function saveProfile() {
-  const profile = {full: mode === 'full', english: mode === 'english'};
+  const profile = {full: mode === 'full', english: mode === 'english',
+                   original: mode === 'original'};
   $('cats').querySelectorAll('input').forEach(el => profile[el.dataset.id] = el.checked);
   await fetch('/api/profile', {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(profile)
@@ -562,6 +576,10 @@ async function saveProfile() {
 }
 
 async function refreshCounts() {
+  if (mode === 'original') {
+    $('catsSum').textContent = 'Родной текст игры — ничего не переводится';
+    return;
+  }
   if (mode === 'english') {
     $('catsSum').textContent = 'Английский текст с блюпринтами (без перевода)';
     return;
@@ -801,6 +819,13 @@ loadPaths();
 loadGame();
 loadStatus();
 loadUpdate();
+
+(async () => {
+  try {
+    mode = currentMode(await (await fetch('/api/profile')).json());
+    $('install').textContent = installLabel();
+  } catch (e) { /* профиль недоступен — остаётся подпись из разметки */ }
+})();
 </script>
 </body>
 </html>

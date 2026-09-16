@@ -79,13 +79,48 @@ class GameVersion:
 # Из "sc-alpha-4.9.0" достаём "4.9.0"
 _BRANCH_VER_RX = re.compile(r'(\d+\.\d+\.\d+)')
 
+# Мажор и минор в начале версии: "4.10.1" -> "4.10"
+_SERIES_RX = re.compile(r'^(\d+\.\d+)')
+
+# Версия в начале тега релиза: "4.10.1-v126" -> "4.10.1"
+_TAG_VER_RX = re.compile(r'^(\d+\.\d+\.\d+)-')
+
+
+def version_series(version: str) -> str:
+    """Серия патча: '4.10.1' -> '4.10'. Пустая строка, если версия не разобралась."""
+    m = _SERIES_RX.match(version.strip())
+    return m.group(1) if m else ''
+
+
+def tag_fits_game(tag: str, game_version: str) -> bool:
+    """
+    Подходит ли релиз перевода установленной игре.
+
+    Сравниваем по серии (4.10), а не по полной версии, потому что игра сама
+    называет себя неточно: в build_manifest.id у патча 4.10.1 ветка осталась
+    sc-alpha-4.10.0, и строгое сравнение отвергало заведомо правильный перевод
+    с тегом 4.10.1-v126. Внутри одной серии тексты расходятся на считанные
+    строки, а вот 4.10 против 4.11 — уже другой патч, и такой релиз мы
+    по-прежнему считаем неподходящим.
+    """
+    if not tag or not game_version:
+        return False
+
+    m = _TAG_VER_RX.match(tag.strip())
+    if not m:
+        return False
+
+    series = version_series(game_version)
+    return bool(series) and version_series(m.group(1)) == series
+
 
 def game_version(branch_dir: Path) -> GameVersion | None:
     """
     Версия установленной игры.
 
     Нужна, чтобы сверять с версией перевода: релизы русского помечены
-    тегом вида 4.9.0-v112, и первая часть должна совпасть с игрой.
+    тегом вида 4.9.0-v112. Сверяет tag_fits_game — по серии патча, потому
+    что сама игра свою версию в манифесте округляет.
     """
     manifest = branch_dir / 'build_manifest.id'
     if not manifest.is_file():
@@ -285,3 +320,87 @@ def install(branch_dir: Path, source_ini: Path,
     result.messages.append(result.cfg_message)
 
     return result
+
+
+def restore_original(branch_dir: Path) -> InstallResult:
+    """
+    Возвращает игре родной текст: убирает всё, что мы ей подкладывали.
+
+    Нужно, когда вышел новый патч, а перевода под него ещё нет. Тогда любой
+    установленный файл — от прошлой версии игры, и часть строк в нём просто
+    отсутствует. Оригинал лежит внутри Data.p4k и подставляется сам, как только
+    рядом не остаётся наших global.ini, поэтому качать для этого нечего.
+
+    Забираем обе локали: korean_(south_korea) — русский перевод, english —
+    английский с блюпринтами. Файлы не стираем совсем, а сохраняем рядом
+    бэкапом: вернуться к переводу можно будет одной кнопкой.
+    """
+    result = InstallResult()
+
+    if not branch_dir.is_dir():
+        result.ok = False
+        result.messages.append(f'Папка ветки не найдена: {branch_dir}')
+        return result
+
+    removed = []
+    for locale in (LOCALE_DIR, 'english'):
+        target = branch_dir / 'data' / 'Localization' / locale / 'global.ini'
+        if not target.is_file():
+            continue
+
+        backup = _backup_existing(target)
+        try:
+            target.unlink()
+        except OSError as e:
+            log.error('Не удалось убрать %s: %s', target, e, exc_info=True)
+            result.ok = False
+            result.messages.append(f'Не удалось убрать {target}: {e}')
+            return result
+
+        removed.append(locale)
+        result.backup = backup
+        result.messages.append(f'Убран подменённый global.ini из {locale}')
+        log.info('Убран подменённый файл: %s', target)
+
+    if not removed:
+        result.messages.append('Подменённых файлов не было — в игре и так оригинал')
+
+    result.cfg_status, result.cfg_message = _restore_user_cfg(branch_dir)
+    result.messages.append(result.cfg_message)
+    return result
+
+
+def _restore_user_cfg(branch_dir: Path) -> tuple[str, str]:
+    """
+    Возвращает в user.cfg английский — родной язык игры.
+
+    Чужой язык (китайский, немецкий) не трогаем: его выбирал человек, а не мы.
+    Свои значения — korean-локаль и english — переставляем спокойно.
+    """
+    cfg = branch_dir / 'user.cfg'
+    if not cfg.is_file():
+        return 'already_ok', 'Готово: игра показывает свой оригинальный текст.'
+
+    try:
+        text = cfg.read_text(encoding='utf-8', errors='replace')
+    except OSError as e:
+        log.error('Не удалось прочитать user.cfg: %s', e, exc_info=True)
+        return 'needs_manual', ('Не удалось прочитать user.cfg. '
+                                'Открой его и поставь: g_language = english')
+
+    m = _CFG_LANG_RX.search(text)
+    if m is None:
+        return 'already_ok', 'Готово: игра показывает свой оригинальный текст.'
+
+    current = m.group(1).strip()
+    if current.lower() == 'english':
+        return 'already_ok', 'Готово: игра показывает свой оригинальный текст.'
+
+    if current.lower() != LOCALE_DIR:
+        return 'conflict', (
+            f'В user.cfg стоит чужой язык: g_language = {current}. Не трогаю его. '
+            'Если нужен оригинал, замени строку на: g_language = english')
+
+    cfg.write_text(_CFG_LANG_RX.sub('g_language = english', text), encoding='utf-8')
+    log.info('user.cfg: %s -> english', LOCALE_DIR)
+    return 'created', 'Готово: язык вернулся на english, игра показывает оригинал.'
