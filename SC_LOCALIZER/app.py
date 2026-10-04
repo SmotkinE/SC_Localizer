@@ -23,7 +23,7 @@ from config import Config
 from file_dialog import run_dialog_to_file
 from github_source import (EN_BRANCH, GitHubError, download_english, download_russian,
                            english_version, pick_release, russian_releases)
-from ini_io import load_ini, load_overrides
+from ini_io import ensure_user_overrides, load_ini, load_overrides
 from installer import (find_branches, find_game_dirs, game_version, install,
                        install_english, restore_original, tag_fits_game)
 from logger import get_logger
@@ -966,9 +966,13 @@ def _do_build(skip_invalid: bool = True) -> dict:
     ensure_loaded()
     profile = load_profile()
 
-    overrides = load_overrides(Config.OVERRIDES_FILE)
+    # Личные исправления игрока ложатся поверх встроенных: если он поправил
+    # ту же строку по-своему, побеждает его вариант.
+    builtin = load_overrides(Config.BUILTIN_OVERRIDES_FILE)
+    personal = load_overrides(Config.OVERRIDES_FILE)
+    overrides = {**builtin, **personal}
     if overrides:
-        ui_log(f'Ручных исправлений загружено: {len(overrides)}')
+        ui_log(f'Ручных исправлений: встроенных {len(builtin)}, твоих {len(personal)}')
 
     ui_log('Собираю локализацию...')
     out_path = Config.OUTPUT_DIR / 'global.ini'
@@ -1129,6 +1133,10 @@ def main() -> None:
         log.info('Программа уже запущена, открываю %s', url)
         webbrowser.open(url)
         return
+
+    # Личный файл исправлений: заготовка, если его нет. Делается при каждом
+    # запуске, чтобы файл был на месте до того, как игрок полезет его искать.
+    ensure_user_overrides(Config.OVERRIDES_FILE)
 
     just_updated = UPDATED_FLAG in sys.argv
 

@@ -47,7 +47,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-copy /Y "..\SC_LOCALIZER\overrides.ini" "%~dp0dist\SC_Localizer\overrides.ini" >nul 2>&1
 copy /Y "%~dp0ПРОЧТИ МЕНЯ.txt" "%~dp0dist\SC_Localizer\ПРОЧТИ МЕНЯ.txt" >nul 2>&1
 REM PyInstaller сносит папку dist целиком, поэтому файлы для человека
 REM кладём обратно после каждой сборки.

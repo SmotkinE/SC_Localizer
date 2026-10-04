@@ -5,6 +5,7 @@ SC_LOCALIZER/output/
 SC_LOCALIZER/cache/
 SC_LOCALIZER/profile.json
 SC_LOCALIZER/paths.json
+SC_LOCALIZER/overrides.ini
 SC_LOCALIZER/browse_resp.txt
 SC_LOCALIZER/code.txt
 

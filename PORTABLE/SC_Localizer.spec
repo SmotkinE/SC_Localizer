@@ -18,7 +18,10 @@ a = Analysis(
     pathex=[str(SRC)],
     binaries=[],
     # Шаблон страницы обязателен: Flask ищет его на диске, в код он не попадает.
-    datas=[(str(SRC / 'templates'), 'templates')],
+    # Встроенные исправления перевода тоже едут внутри: их обновляет каждая
+    # новая версия, а личный overrides.ini игрока лежит снаружи и не трогается.
+    datas=[(str(SRC / 'templates'), 'templates'),
+           (str(SRC / 'builtin_overrides.ini'), '.')],
     # tkinter нужен окну выбора файла, waitress — вместо сервера разработки.
     hiddenimports=['tkinter', 'tkinter.filedialog', 'waitress', 'requests'],
     hookspath=[],
