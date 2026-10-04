@@ -26,8 +26,10 @@ a = Analysis(
     hiddenimports=['tkinter', 'tkinter.filedialog', 'waitress', 'requests'],
     hookspath=[],
     runtime_hooks=[],
-    # Тяжёлые библиотеки, которых в проекте нет и близко.
-    excludes=['numpy', 'pandas', 'matplotlib', 'PIL', 'scipy', 'PyQt5', 'PySide2'],
+    # Тяжёлые библиотеки, которых в проекте нет и близко. Плюс движки окна,
+    # которые pywebview умеет, но нам не нужны: на Windows работает Edge (WebView2).
+    excludes=['numpy', 'pandas', 'matplotlib', 'PIL', 'scipy', 'PyQt5', 'PySide2',
+              'PyQt6', 'PySide6', 'qtpy', 'gi', 'cefpython3'],
     noarchive=False,
 )
 

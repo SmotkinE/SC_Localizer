@@ -831,6 +831,50 @@ loadUpdate();
     $('install').textContent = installLabel();
   } catch (e) { /* профиль недоступен — остаётся подпись из разметки */ }
 })();
+
+/* ---------- окно программы ----------
+   В собственном окне (не во вкладке) высота подстраивается под содержимое:
+   открыли лог — окно выросло, закрыли — ужалось. Во вкладке браузера
+   window.pywebview нет, событие pywebviewready не приходит, и всё это молчит. */
+function wantedHeight() {
+  const cs = getComputedStyle(document.body);
+  let h = document.querySelector('.window').getBoundingClientRect().height
+        + parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+  // Всплывающее окно (выбор, настройка перевода) лежит поверх страницы и на её
+  // высоту не влияет — его полный размер считаем отдельно: видимая часть плюс
+  // всё, что спрятано под прокруткой. И раз окно ограничено долей высоты
+  // экрана (max-height в vh), программе нужно ещё во столько же раз больше.
+  document.querySelectorAll('.overlay.open .modal').forEach(m => {
+    let full = m.getBoundingClientRect().height;
+    m.querySelectorAll('.modal-body').forEach(b => { full += b.scrollHeight - b.clientHeight; });
+    const share = parseFloat(getComputedStyle(m).maxHeight) / window.innerHeight || 1;
+    const pad = parseFloat(getComputedStyle(m.parentElement).paddingTop) * 2;
+    h = Math.max(h, full + pad, full / share);
+  });
+  return Math.ceil(h);
+}
+
+function fitWindow() {
+  const api = window.pywebview && window.pywebview.api;
+  if (api && api.fit) api.fit(wantedHeight(), window.devicePixelRatio || 1);
+}
+
+let fitQueued = false;
+const queueFit = () => {
+  if (fitQueued) return;
+  fitQueued = true;
+  requestAnimationFrame(() => { fitQueued = false; fitWindow(); });
+};
+
+window.addEventListener('pywebviewready', () => {
+  // Высота страницы меняется — лог, плашки, результат установки, ширина окна.
+  new ResizeObserver(queueFit).observe(document.querySelector('.window'));
+  // Всплывающие окна открываются сменой класса, а список категорий
+  // дорисовывается позже — это видно только по изменениям в разметке.
+  new MutationObserver(queueFit).observe(document.body,
+    {subtree: true, childList: true, attributes: true, attributeFilter: ['class']});
+  queueFit();
+});
 </script>
 </body>
 </html>

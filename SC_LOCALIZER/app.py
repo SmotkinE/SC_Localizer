@@ -19,6 +19,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request, send_from_directory
 from werkzeug.exceptions import HTTPException
 
+import desktop_window
 from config import Config
 from file_dialog import run_dialog_to_file
 from github_source import (EN_BRANCH, GitHubError, download_english, download_russian,
@@ -1114,6 +1115,53 @@ def _port_is_busy() -> bool:
         return s.connect_ex((Config.HOST, Config.PORT)) == 0
 
 
+@app.route('/api/focus', methods=['POST'])
+def api_focus():
+    """Второй запуск просит показать уже открытое окно."""
+    return '', (204 if desktop_window.focus() else 404)
+
+
+def _focus_running(url: str) -> bool:
+    """
+    Просит уже запущенную копию вывести своё окно вперёд.
+
+    False — если та работает в браузере (или это версия без окна): тогда
+    показываем её вкладку, как раньше. Прокси из окружения не используем:
+    запрос идёт к самому себе на 127.0.0.1.
+    """
+    import urllib.request
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        req = urllib.request.Request(f'{url}/api/focus', method='POST')
+        return opener.open(req, timeout=3).status == 204
+    except Exception:
+        return False
+
+
+def _wait_for_server(timeout: float = 15) -> None:
+    """Ждёт, пока сервер начнёт отвечать: окно не должно открыться на ошибке."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and not _port_is_busy():
+        time.sleep(0.1)
+
+
+def _serve(use_reloader: bool = True) -> None:
+    # Встроенный сервер Flask — для разработки: он сам про это предупреждает
+    # и держит нагрузку хуже. В раздаваемой сборке поднимаем waitress.
+    if Config.DEBUG:
+        app.run(host=Config.HOST, port=Config.PORT, debug=True, use_reloader=use_reloader)
+        return
+
+    try:
+        from waitress import serve
+    except ImportError:
+        log.warning('waitress не установлен, поднимаю встроенный сервер Flask')
+        app.run(host=Config.HOST, port=Config.PORT)
+        return
+
+    serve(app, host=Config.HOST, port=Config.PORT, threads=8)
+
+
 def main() -> None:
     # Режим окна выбора файла: программа вызывает саму себя с этим флагом.
     # Проверка обязана быть первой — до всякого поднятия сервера.
@@ -1130,6 +1178,9 @@ def main() -> None:
     # Второй запуск не поднимет сервер (порт занят) и без этой проверки просто
     # молча умрёт. Показываем уже открытую программу.
     if _port_is_busy():
+        if _focus_running(url):
+            log.info('Программа уже запущена, вывел её окно вперёд')
+            return
         log.info('Программа уже запущена, открываю %s', url)
         webbrowser.open(url)
         return
@@ -1164,11 +1215,15 @@ def main() -> None:
         _last_ping['at'] = time.monotonic()
         webbrowser.open(url)
 
-    threading.Thread(target=wait_for_old_page if just_updated else open_browser,
-                     daemon=True).start()
-    # Сторож: закроет программу, когда закроют вкладку в браузере. Иначе
-    # сервер висит в фоне и держит свои файлы — как раз то, что мешало пересборке.
-    threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
+    # В окне программа живёт ровно столько, сколько окно: ни вкладка, ни сторож
+    # не нужны. После обновления новая копия просто открывает своё окно.
+    use_window = desktop_window.available()
+    if not use_window:
+        threading.Thread(target=wait_for_old_page if just_updated else open_browser,
+                         daemon=True).start()
+        # Сторож: закроет программу, когда закроют вкладку в браузере. Иначе
+        # сервер висит в фоне и держит свои файлы — как раз то, что мешало пересборке.
+        threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
 
     ui_log('Программа запущена')
     log.info('Слушаю %s', url)
@@ -1183,20 +1238,22 @@ def main() -> None:
 
     threading.Thread(target=startup_all, daemon=True).start()
 
-    # Встроенный сервер Flask — для разработки: он сам про это предупреждает
-    # и держит нагрузку хуже. В раздаваемой сборке поднимаем waitress.
-    if Config.DEBUG:
-        app.run(host=Config.HOST, port=Config.PORT, debug=True)
+    if use_window:
+        # Окну нужен главный поток, поэтому сервер уходит в фоновый.
+        threading.Thread(target=_serve, kwargs={'use_reloader': False}, daemon=True).start()
+        _wait_for_server()
+        if desktop_window.run(url):
+            log.info('Окно закрыто, выхожу')
+            os._exit(0)
+        # Движок не поднялся — работаем по-старому, через браузер.
+        log.warning('Окно не открылось, открываю в браузере')
+        _last_ping['at'] = time.monotonic()
+        webbrowser.open(url)
+        threading.Thread(target=_heartbeat_watchdog, daemon=True).start()
+        threading.Event().wait()
         return
 
-    try:
-        from waitress import serve
-    except ImportError:
-        log.warning('waitress не установлен, поднимаю встроенный сервер Flask')
-        app.run(host=Config.HOST, port=Config.PORT)
-        return
-
-    serve(app, host=Config.HOST, port=Config.PORT, threads=8)
+    _serve()
 
 
 if __name__ == '__main__':
