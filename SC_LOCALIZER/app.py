@@ -26,7 +26,8 @@ from github_source import (EN_BRANCH, GitHubError, download_english, download_ru
                            english_version, pick_release, russian_releases)
 from ini_io import ensure_user_overrides, load_ini, load_overrides
 from installer import (find_branches, find_game_dirs, game_version, install,
-                       install_english, restore_original, tag_fits_game)
+                       install_english, is_live_branch, is_ptu_tag, restore_original,
+                       tag_fits_game)
 from logger import get_logger
 from merger import merge
 from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, ORIGINAL_ID,
@@ -355,9 +356,10 @@ def _autodetect_game() -> tuple[str, list[str], str]:
     return game_dir, branches, branch
 
 
-def _game_version_short() -> str:
+def _game_target() -> tuple[str, str]:
     """
-    Версия игры вида '4.9.0' — с ней сверяются теги релизов перевода.
+    Версия игры вида '4.9.0' и ветка (LIVE, PTU…) — с ними сверяются теги
+    релизов перевода: ветка решает, годятся ли сборки для тестового сервера.
 
     Ветку спрашиваем у автоопределения, а не у сохранённых путей: игрок мог
     сидеть на HOTFIX, который после патча исчез, и в файле осталось имя
@@ -366,16 +368,16 @@ def _game_version_short() -> str:
     """
     game_dir, _branches, branch = _autodetect_game()
     if not game_dir or not branch:
-        return ''
+        return '', branch
     v = game_version(Path(game_dir) / branch)
-    return v.short if v else ''
+    return (v.short if v else ''), branch
 
 
 @app.route('/api/source')
 def api_source():
     """Что доступно на GitHub и что сейчас используется."""
     paths = load_paths()
-    game_ver = _game_version_short()
+    game_ver, branch = _game_target()
     result = {
         'source': paths['source'],
         'ru_tag': paths['ru_tag'],
@@ -394,7 +396,7 @@ def api_source():
             {
                 'tag': r.tag, 'date': r.date, 'name': r.name, 'prerelease': r.prerelease,
                 # Тег вида 4.10.1-v126 подходит игре серии 4.10
-                'fits_game': tag_fits_game(r.tag, game_ver),
+                'fits_game': tag_fits_game(r.tag, game_ver, branch),
             }
             for r in russian_releases()
         ]
@@ -459,10 +461,10 @@ def ensure_fresh_sources(force: bool = False) -> dict:
     """
     paths = load_paths()
     meta = _cache_meta()
-    game_ver = _game_version_short()
+    game_ver, branch = _game_target()
 
     releases = russian_releases()
-    chosen = pick_release(releases, game_ver)
+    chosen = pick_release(releases, game_ver, branch)
     if chosen is None:
         raise GitHubError('На GitHub нет ни одного релиза перевода')
 
@@ -501,7 +503,7 @@ def ensure_fresh_sources(force: bool = False) -> dict:
     save_paths(english=str(en_dest), russian=str(ru_dest),
                source=f'github:{chosen.tag}', ru_tag=chosen.tag)
 
-    fits = tag_fits_game(chosen.tag, game_ver)
+    fits = tag_fits_game(chosen.tag, game_ver, branch)
     if game_ver and not fits:
         ui_log(f'Под твою игру ({game_ver}) перевода пока нет, '
                f'беру ближайший: {chosen.tag}', 'warn')
@@ -749,10 +751,14 @@ def api_fetch():
     en_keys, ru_keys = set(_store['en']), set(_store['ru'])
     missing = len(en_keys - ru_keys)
 
-    game_ver = _game_version_short()
-    fits = tag_fits_game(tag, game_ver)
+    game_ver, branch = _game_target()
+    fits = tag_fits_game(tag, game_ver, branch)
 
-    if game_ver and not fits:
+    for_ptu = is_live_branch(branch) and is_ptu_tag(tag)
+    if for_ptu:
+        ui_log(f'ВНИМАНИЕ: перевод {tag} собран для тестового сервера (PTU), '
+               f'а у тебя {branch}. Без перевода останется {missing} строк', 'warn')
+    elif game_ver and not fits:
         ui_log(f'ВНИМАНИЕ: перевод {tag} собран не под твою версию игры ({game_ver}). '
                f'Без перевода останется {missing} строк', 'warn')
     elif missing:
@@ -763,7 +769,9 @@ def api_fetch():
     _startup.update(
         state='ready' if not (game_ver and not fits) else 'stale',
         tag=tag, fits_game=fits, downloaded=True,
-        message=(f'Перевод {tag} собран не под твою игру ({game_ver}).'
+        message=(f'Перевод {tag} — для тестового сервера (PTU), а у тебя {branch}.'
+                 if for_ptu
+                 else f'Перевод {tag} собран не под твою игру ({game_ver}).'
                  if game_ver and not fits
                  else f'Перевод {tag} скачан и выбран вручную.'))
 

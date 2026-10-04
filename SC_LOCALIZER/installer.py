@@ -92,7 +92,24 @@ def version_series(version: str) -> str:
     return m.group(1) if m else ''
 
 
-def tag_fits_game(tag: str, game_version: str) -> bool:
+# Ветки с обычной игрой. Остальные (PTU, EPTU, TECH-PREVIEW) — тестовые сервера.
+LIVE_BRANCHES = ('LIVE', 'HOTFIX')
+
+# Сборки перевода для тестового сервера помечены хвостом: 4.10.0-v124-ptu.
+_PTU_TAG_RX = re.compile(r'-e?ptu\b', re.I)
+
+
+def is_ptu_tag(tag: str) -> bool:
+    """Сборка перевода для тестового сервера (PTU/EPTU)."""
+    return bool(_PTU_TAG_RX.search(tag or ''))
+
+
+def is_live_branch(branch: str) -> bool:
+    """Обычная игра. Ветка неизвестна — считаем обычной: так играет почти каждый."""
+    return (branch or 'LIVE').upper() in LIVE_BRANCHES
+
+
+def tag_fits_game(tag: str, game_version: str, branch: str = '') -> bool:
     """
     Подходит ли релиз перевода установленной игре.
 
@@ -102,8 +119,14 @@ def tag_fits_game(tag: str, game_version: str) -> bool:
     с тегом 4.10.1-v126. Внутри одной серии тексты расходятся на считанные
     строки, а вот 4.10 против 4.11 — уже другой патч, и такой релиз мы
     по-прежнему считаем неподходящим.
+
+    Обычной игре сборка для тестового сервера не подходит никогда: она под
+    другой билд, и в одной серии с LIVE оказывается регулярно. Тестовому
+    серверу годится любая сборка серии — свежая LIVE лучше устаревшей PTU.
     """
     if not tag or not game_version:
+        return False
+    if is_live_branch(branch) and is_ptu_tag(tag):
         return False
 
     m = _TAG_VER_RX.match(tag.strip())

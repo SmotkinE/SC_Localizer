@@ -27,7 +27,7 @@ from urllib.parse import unquote
 
 import requests
 
-from installer import tag_fits_game
+from installer import is_live_branch, is_ptu_tag, tag_fits_game
 from logger import get_logger
 
 log = get_logger(__name__)
@@ -212,7 +212,8 @@ def download_english(dest: Path, path: str = '') -> int:
     return download_file(url, dest, expected_size=None, expected_md5=None)
 
 
-def pick_release(releases: list['Release'], game_version: str = '') -> 'Release | None':
+def pick_release(releases: list['Release'], game_version: str = '',
+                 branch: str = '') -> 'Release | None':
     """
     Какой релиз брать.
 
@@ -226,12 +227,17 @@ def pick_release(releases: list['Release'], game_version: str = '') -> 'Release 
     указывало бы на самый первый релиз серии — на 4.10.1 программа упорно
     ставила перевод 4.10.0-v125 вместо свежего 4.10.1-v126, да ещё и метила
     его как актуальный.
+
+    Обычной игре (LIVE, HOTFIX) сборки для тестового сервера (-ptu) не
+    достаются никогда — даже в запасном варианте «своей серии нет».
     """
+    if is_live_branch(branch):
+        releases = [r for r in releases if not is_ptu_tag(r.tag)]
     if not releases:
         return None
     if game_version:
         for r in releases:
-            if tag_fits_game(r.tag, game_version):
+            if tag_fits_game(r.tag, game_version, branch):
                 return r
     return releases[0]
 
