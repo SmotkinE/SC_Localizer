@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from config import Config
-from github_source import API, GitHubError, download_file, http_get
+from github_source import GitHubError, download_file, latest_release_tag, release_zip
 from logger import get_logger
 from version import APP_VERSION
 
@@ -89,28 +89,31 @@ def latest_release() -> AppRelease | None:
     """
     if not UPDATE_REPO:
         return None
-    try:
-        data = http_get(f'{API}/repos/{UPDATE_REPO}/releases/latest').json()
-    except GitHubError as e:
-        if 'Не найдено' in str(e):
-            log.info('В %s пока нет релизов программы', UPDATE_REPO)
-            return None
-        raise
 
-    tag = data.get('tag_name', '')
-    asset = next((a for a in data.get('assets', [])
-                  if a.get('name', '').lower().endswith('.zip')), None)
-    if not asset:
+    # Без api.github.com: тег — по переадресации /releases/latest, архив —
+    # со списка файлов релиза. Подробности в шапке github_source.
+    tag = latest_release_tag(UPDATE_REPO)
+    if not tag:
+        log.info('В %s пока нет релизов программы', UPDATE_REPO)
+        return None
+
+    url, date = release_zip(UPDATE_REPO, tag)
+    if not url:
         log.warning('В релизе %s нет zip-архива, обновляться нечем', tag)
         return None
 
     return AppRelease(
         version=tag.lstrip('vV'),
         tag=tag,
-        notes=(data.get('body') or '').strip(),
-        url=asset.get('browser_download_url', ''),
-        size=int(asset.get('size') or 0),
-        date=(data.get('published_at') or '')[:10],
+        # Описание интерфейс не показывает, а ради него пришлось бы
+        # разбирать страницу релиза.
+        notes='',
+        url=url,
+        # Точного размера на странице нет. Не беда: оборванный архив не
+        # распакуется (zip проверяет контрольные суммы), и обновление
+        # остановится раньше, чем тронет рабочие файлы.
+        size=0,
+        date=date,
     )
 
 

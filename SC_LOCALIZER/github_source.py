@@ -8,12 +8,22 @@ master, поэтому версия определяется по коммиту
 Русский — StarCitizenRu от n1ghter. Файлы лежат в дереве репозитория, а к
 каждому релизу приложен index.txt с размером и MD5 — берём его и проверяем
 скачанное.
+
+К api.github.com программа не обращается вовсе. Без токена он даёт 60
+запросов в час на интернет-адрес, и их делят все: браузер на страницах
+GitHub, другие программы, соседи за общим адресом провайдера. Программа
+упиралась в чужой расход. Всё нужное GitHub отдаёт и обычными страницами:
+список релизов — лентой releases.atom, последний релиз — переадресацией
+/releases/latest, файлы — с raw.githubusercontent.com и ссылками релизов.
 """
 import base64
 import hashlib
+import re
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 
@@ -25,17 +35,18 @@ log = get_logger(__name__)
 # --- Английский: StarStrings ---
 EN_REPO = 'MrKraken/StarStrings'
 EN_BRANCH = 'master'
-# Путь-подсказка. Автор уже переносил файл (Data/... -> src/For_Players/Data/...),
-# поэтому не полагаемся на него: если по нему 404, ищем в дереве репозитория.
-EN_PATH_HINT = 'src/For_Players/Data/Localization/english/global.ini'
-EN_PATH_SUFFIX = 'english/global.ini'
+# Где лежит английский. Автор уже переносил файл (Data/... -> src/For_Players/
+# Data/...), поэтому пробуем по очереди: текущий путь, потом прежний. Искать
+# по дереву репозитория без API нечем — переедет снова, путь допишется сюда.
+EN_PATHS = ('src/For_Players/Data/Localization/english/global.ini',
+            'Data/Localization/english/global.ini')
 
 # --- Русский: StarCitizenRu ---
 RU_REPO = 'n1ghter/StarCitizenRu'
 RU_PATH = 'data/Localization/korean_(south_korea)/global.ini'
 RU_INDEX_ASSET = 'index.txt'
 
-API = 'https://api.github.com'
+WEB = 'https://github.com'
 RAW = 'https://raw.githubusercontent.com'
 
 # Без таймаута запрос однажды повесит программу навсегда.
@@ -44,21 +55,18 @@ DOWNLOAD_TIMEOUT = 300
 RETRIES = 3
 RETRY_PAUSE = 2
 
-# GitHub без токена даёт всего 60 запросов в час на IP — и только к api.github.com.
-# Запросы к raw.githubusercontent.com в лимит не входят. Поэтому:
-#  - версию английского берём через HEAD на raw (0 к лимиту), а не через commits API;
-#  - список релизов (единственный неизбежный API-вызов) кэшируем в памяти,
-#    чтобы открытие страницы и последующая сборка не тратили по запросу каждый.
-_API_CACHE_TTL = 300  # 5 минут
-_api_cache: dict[str, tuple[float, object]] = {}
+# Список релизов держим в памяти несколько минут: открытие страницы и сборка
+# сразу следом не должны дважды ходить за одним и тем же.
+_CACHE_TTL = 300  # 5 минут
+_cache: dict[str, tuple[float, object]] = {}
 
 
-def _cached_api(key: str, fetch):
-    hit = _api_cache.get(key)
-    if hit and (time.monotonic() - hit[0]) < _API_CACHE_TTL:
+def _cached(key: str, fetch):
+    hit = _cache.get(key)
+    if hit and (time.monotonic() - hit[0]) < _CACHE_TTL:
         return hit[1]
     value = fetch()
-    _api_cache[key] = (time.monotonic(), value)
+    _cache[key] = (time.monotonic(), value)
     return value
 
 
@@ -122,13 +130,13 @@ def http_get(url: str, *, timeout: int = TIMEOUT, stream: bool = False) -> reque
     last: Exception | None = None
     for attempt in range(1, RETRIES + 1):
         try:
-            r = requests.get(url, timeout=timeout, stream=stream,
-                             headers={'Accept': 'application/vnd.github+json'})
+            r = requests.get(url, timeout=timeout, stream=stream)
             if r.status_code >= 500:
                 raise GitHubError(f'GitHub ответил {r.status_code}')
             if r.status_code == 404:
                 raise GitHubError(f'Не найдено на GitHub: {url}')
-            if r.status_code == 403 and 'rate limit' in r.text.lower():
+            # Обычные страницы GitHub тоже могут попросить подождать — кодом 429.
+            if r.status_code == 429 or (r.status_code == 403 and 'rate limit' in r.text.lower()):
                 raise GitHubError('GitHub временно ограничил число запросов. '
                                   + _rate_limit_hint(r))
             r.raise_for_status()
@@ -155,38 +163,33 @@ class EnglishVersion:
     path: str       # путь к файлу в репозитории (может переезжать)
 
 
-def _english_head() -> 'requests.Response | None':
+def _english_head() -> 'tuple[requests.Response, str]':
     """
-    HEAD на файл английского по известному пути. Не тратит лимит API.
+    Находит файл английского: HEAD по известным путям на raw. Возвращает
+    ответ и путь, по которому файл нашёлся.
 
-    Возвращает ответ, если файл на месте, иначе None — тогда путь ищем в дереве.
+    Сбой сети — это сбой сети, а не переезд файла: раньше он отправлял искать
+    файл по всему репозиторию и тратил на это запрос.
     """
-    try:
-        r = requests.head(f'{RAW}/{EN_REPO}/{EN_BRANCH}/{EN_PATH_HINT}',
-                         timeout=TIMEOUT, allow_redirects=True)
-        return r if r.status_code == 200 else None
-    except requests.RequestException:
-        return None
-
-
-def english_version() -> EnglishVersion:
-    """
-    Версия английского — из заголовков raw-файла (ETag / Last-Modified).
-
-    Через raw, а не через commits API: последнее тратило бы драгоценный запрос
-    из лимита в 60/час на каждое открытие страницы и каждую сборку.
-    """
-    head = _english_head()
-    path = EN_PATH_HINT
-    if head is None:
-        # Файл переехал — ищем в дереве (один запрос к API, редкий случай).
-        path = _find_english_path()
+    for path in EN_PATHS:
         try:
-            head = requests.head(f'{RAW}/{EN_REPO}/{EN_BRANCH}/{path}',
-                                 timeout=TIMEOUT, allow_redirects=True)
+            r = requests.head(f'{RAW}/{EN_REPO}/{EN_BRANCH}/{path}',
+                              timeout=TIMEOUT, allow_redirects=True)
         except requests.RequestException as e:
             # Наружу отдаём только GitHubError — вызывающие ловят именно его.
             raise GitHubError(f'Не удалось проверить английский файл: {e}') from e
+        if r.status_code == 200:
+            if path != EN_PATHS[0]:
+                log.warning('Английский нашёлся по прежнему пути: %s', path)
+            return r, path
+
+    raise GitHubError('В репозитории StarStrings не найден english/global.ini — '
+                      'возможно, автор изменил структуру. Укажи файл вручную.')
+
+
+def english_version() -> EnglishVersion:
+    """Версия английского — из заголовков raw-файла (ETag / Last-Modified)."""
+    head, path = _english_head()
 
     etag = (head.headers.get('ETag') or '').strip('"')
     last_mod = head.headers.get('Last-Modified', '')
@@ -201,27 +204,10 @@ def english_version() -> EnglishVersion:
                           date=date, path=path)
 
 
-def _find_english_path() -> str:
-    """
-    Ищет english/global.ini в дереве репозитория — на случай, если файл переехал.
-
-    Один запрос к API, поэтому зовётся только когда файл не по обычному пути.
-    """
-    log.warning('Английский не по обычному пути, ищу в дереве репозитория')
-    r = http_get(f'{API}/repos/{EN_REPO}/git/trees/{EN_BRANCH}?recursive=1')
-    for item in r.json().get('tree', []):
-        if item.get('path', '').lower().endswith(EN_PATH_SUFFIX):
-            log.info('Английский найден: %s', item['path'])
-            return item['path']
-
-    raise GitHubError('В репозитории StarStrings не найден english/global.ini — '
-                      'возможно, автор изменил структуру. Укажи файл вручную.')
-
-
 def download_english(dest: Path, path: str = '') -> int:
     # Путь могли уже найти в english_version — тогда не ищем повторно.
     if not path:
-        path = EN_PATH_HINT if _english_head() else _find_english_path()
+        path = _english_head()[1]
     url = f'{RAW}/{EN_REPO}/{EN_BRANCH}/{path}'
     return download_file(url, dest, expected_size=None, expected_md5=None)
 
@@ -260,21 +246,37 @@ class Release:
     prerelease: bool
 
 
+_ATOM = '{http://www.w3.org/2005/Atom}'
+
+
+def _releases_from_feed(xml: bytes) -> list[Release]:
+    """Релизы из ленты releases.atom — от новых к старым, как их показывает GitHub."""
+    try:
+        root = ET.fromstring(xml)
+    except ET.ParseError as e:
+        raise GitHubError(f'GitHub прислал непонятный список релизов: {e}') from e
+
+    releases = []
+    for entry in root.iter(f'{_ATOM}entry'):
+        link = entry.find(f'{_ATOM}link')
+        href = link.get('href', '') if link is not None else ''
+        if '/releases/tag/' not in href:
+            continue
+        releases.append(Release(
+            tag=unquote(href.rsplit('/releases/tag/', 1)[1]),
+            name=(entry.findtext(f'{_ATOM}title') or '').strip(),
+            date=(entry.findtext(f'{_ATOM}updated') or '')[:10],
+            # Отметки «предварительный» в ленте нет, а интерфейс её и не показывает.
+            prerelease=False,
+        ))
+    return releases
+
+
 def russian_releases(limit: int = 15) -> list[Release]:
-    # Кэшируем: это единственный неизбежный запрос к API, и без кэша открытие
-    # страницы плюс сборка тратили бы его дважды подряд.
+    """Последние релизы перевода. В ленте их до десяти — для выбора хватает."""
     def fetch():
-        r = http_get(f'{API}/repos/{RU_REPO}/releases?per_page={limit}')
-        return [
-            Release(
-                tag=x.get('tag_name', ''),
-                name=x.get('name', ''),
-                date=(x.get('published_at') or '')[:10],
-                prerelease=bool(x.get('prerelease')),
-            )
-            for x in r.json()
-        ]
-    return _cached_api(f'releases:{limit}', fetch)
+        return _releases_from_feed(http_get(f'{WEB}/{RU_REPO}/releases.atom').content)
+    return _cached(f'releases:{RU_REPO}', fetch)[:limit]
 
 
 def _parse_index(text: str) -> dict[str, tuple[int, str]]:
@@ -312,6 +314,43 @@ def download_russian(tag: str, dest: Path) -> int:
     size, md5 = index.get(RU_PATH, (None, None))
     url = f'{RAW}/{RU_REPO}/{tag}/{RU_PATH}'
     return download_file(url, dest, expected_size=size, expected_md5=md5)
+
+
+# ---------- релизы программы ----------
+
+def latest_release_tag(repo: str) -> str:
+    """
+    Тег последнего релиза — по переадресации /releases/latest на страницу этого
+    релиза. Пустая строка — релизов пока нет: тогда GitHub ведёт на /releases.
+    """
+    try:
+        r = requests.head(f'{WEB}/{repo}/releases/latest', timeout=TIMEOUT,
+                          allow_redirects=False)
+    except requests.RequestException as e:
+        raise GitHubError(f'Не удалось проверить релизы {repo}: {e}') from e
+    if r.status_code == 429:
+        raise GitHubError('GitHub временно ограничил число запросов. ' + _rate_limit_hint(r))
+
+    location = r.headers.get('Location', '')
+    if '/releases/tag/' not in location:
+        return ''
+    return unquote(location.rsplit('/releases/tag/', 1)[1])
+
+
+def release_zip(repo: str, tag: str) -> tuple[str, str]:
+    """
+    Ссылка на zip-архив релиза и дата его загрузки; ('', '') — архива нет.
+
+    Берём со страницы, которую GitHub подгружает в раздел Assets. Архивы
+    исходников («Source code») лежат по другим адресам и сюда не попадают.
+    """
+    html = http_get(f'{WEB}/{repo}/releases/expanded_assets/{tag}').text
+    link = re.search(rf'href="(/{re.escape(repo)}/releases/download/'
+                     rf'{re.escape(tag)}/[^"]+?\.zip)"', html, re.I)
+    if not link:
+        return '', ''
+    date = re.search(r'datetime="(\d{4}-\d{2}-\d{2})', html)
+    return WEB + link.group(1), (date.group(1) if date else '')
 
 
 # ---------- скачивание с проверкой ----------
