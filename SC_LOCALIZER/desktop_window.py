@@ -18,6 +18,12 @@ log = get_logger(__name__)
 
 TITLE = 'SC Localizer'
 
+# Метка в строке браузера окна. По ней сервер отличает окно от вкладки:
+# если программа работает в окне, а страницу открыли во вкладке (старая
+# вкладка дождалась перезапуска после обновления), вкладке говорим, что её
+# можно закрыть. Страница от этой строки не зависит.
+USER_AGENT = 'SCLocalizerWindow'
+
 # Ниже не ужимаем: при совсем маленьком окне кнопки начинают налезать.
 MIN_HEIGHT = 520
 
@@ -142,11 +148,19 @@ def run(url: str) -> bool:
                                         min_size=(640, MIN_HEIGHT), js_api=_Api())
         # Только Edge. Без явного указания pywebview на старой системе может
         # откатиться на движок Internet Explorer, а страница на нём не работает.
-        webview.start(gui='edgechromium')
+        webview.start(gui='edgechromium', user_agent=USER_AGENT)
     except Exception as e:
         log.warning('Окно не открылось: %s', e, exc_info=True)
+        # Дальше программа работает в браузере — и он должен получать сам
+        # интерфейс, а не надпись «программа открыта в своём окне».
+        _window = None
         return False
     return True
+
+
+def is_open() -> bool:
+    """Работает ли программа в своём окне."""
+    return _window is not None
 
 
 def focus() -> bool:

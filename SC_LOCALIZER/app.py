@@ -220,6 +220,12 @@ def no_cache(response):
 
 @app.route('/')
 def index():
+    # Программа в своём окне, а страницу открыли во вкладке браузера — так
+    # бывает при обновлении с версии без окна: старая вкладка дожидается
+    # перезапуска и перезагружается. Две копии интерфейса сразу только путают.
+    ua = request.headers.get('User-Agent', '')
+    if desktop_window.is_open() and desktop_window.USER_AGENT not in ua:
+        return render_template('in_window.html')
     return render_template('index.html')
 
 
