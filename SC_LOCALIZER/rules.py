@@ -36,15 +36,6 @@ def _tokens_lower(key: str) -> list[str]:
 # Английские заглушки-плейсхолдеры: '[PH] Outcasts Focus' — переводить нечего.
 _PLACEHOLDER_VALUE_RX = re.compile(r'^\s*(\[PH\]|\[WIP\]|<PH>|PH:)', re.I)
 
-_HARD_EXCLUDE_SUBSTR = (
-    'appname_journal',   # техническое имя приложения, не текст
-)
-
-
-def is_hard_excluded(key: str) -> bool:
-    kl = key.lower()
-    return any(s in kl for s in _HARD_EXCLUDE_SUBSTR)
-
 
 # ---------- 2. токены-названия ----------
 
@@ -162,6 +153,14 @@ def _m_voice(k: str, v: str = '') -> bool:
 def _m_journal(k: str, v: str = '') -> bool:
     """Записи журнала и репутационные логи."""
     toks = _tokens_lower(k)
+    # mobiGlas_AppName_Journal — надпись на кнопке приложения в нижней панели
+    # мобигласа, то есть интерфейс, а не запись. Её соседи (Health, Maps)
+    # в «Только описания» остаются английскими, так пусть и она остаётся,
+    # иначе панель выходит вперемешку. В полном русском переводится вместе
+    # со всеми кнопками. Раньше здесь стояло жёсткое исключение, и кнопка
+    # оставалась английской даже в полном русском.
+    if 'appname' in toks:
+        return False
     if any('journal' in t for t in toks):
         return True
     # Короткая форма: 890_J_Mission_Obj_VIP_Long
@@ -469,9 +468,6 @@ def classify(key: str, profile: dict[str, bool], en_value: str = '') -> Decision
     Решает, брать ли русский перевод для ключа.
     profile — какие категории включены; en_value нужен, чтобы отсеять [PH]-заглушки.
     """
-    if is_hard_excluded(key):
-        return Decision(False, 'технический ключ')
-
     if en_value and _PLACEHOLDER_VALUE_RX.match(en_value):
         return Decision(False, 'английский текст — заглушка [PH]')
 
