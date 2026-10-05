@@ -15,6 +15,7 @@
 Настройки и кэш перевода при этом не трогаются: robocopy без /MIR лишнего
 не удаляет, а paths.json, profile.json, cache/ и output/ в архив не попадают.
 """
+import base64
 import os
 import re
 import shutil
@@ -211,7 +212,11 @@ goto wait
 robocopy "{src}" "{dst}" /E /IS /IT /R:20 /W:1 /NFL /NDL /NJH /NJS
 if errorlevel 8 goto giveup
 
-start "" /D "{dst}" "{dst}{sep}{exe}" --updated
+set "RUNDIR={dst}"
+set "MOVEDFROM="
+{rename}
+:run
+start "" /D "%RUNDIR%" "%RUNDIR%{sep}{exe}" --updated %MOVEDFROM%
 cd /d "%TEMP%"
 rmdir /S /Q "{tmp}" >nul 2>&1
 exit /b 0
@@ -224,6 +229,120 @@ rem что всё живо, а рядом лежит записка с прич�
 start "" /D "{dst}" "{dst}{sep}{exe}"
 exit /b 1
 '''
+
+
+# Архив обычно распаковывают «Извлечь всё», и Windows называет папку по имени
+# архива: SC_Localizer_v1.4.1\SC_Localizer\. Программа обновляет себя сама,
+# и версия в имени папки быстро начинает врать — при обновлении её убираем.
+_VERSIONED_DIR_RX = re.compile(r'^SC[_ -]?Localizer[_ -]v?\d+(?:\.\d+)+$', re.I)
+PLAIN_DIR_NAME = 'SC_Localizer'
+MOVED_FROM_FLAG = '--moved-from'
+
+# Переименование сразу после выхода программы иногда не проходит: Проводник
+# или антивирус ещё держат папку. Пробуем несколько раз с паузой.
+_RENAME_BLOCK = r'''set TRIES=0
+:rename
+ren "{old}" "{name}" >nul 2>&1
+if not errorlevel 1 (
+  set "RUNDIR={new_dst}"
+  set MOVEDFROM={flag} "{old}"
+  goto run
+)
+set /a TRIES+=1
+if %TRIES% GEQ 5 goto run
+ping -n 2 127.0.0.1 >nul
+goto rename'''
+
+
+def versioned_folder(app_dir: Path) -> tuple[Path, Path] | None:
+    """
+    Папка с версией в имени и куда её переименовать; None — переименовывать нечего.
+
+    Смотрим саму папку программы и ту, что над ней: «Извлечь всё» кладёт
+    программу в SC_Localizer_vX\\SC_Localizer\\, но бывает и без вложенности.
+    Трогаем только имена, похожие на имя нашего архива, — чужие папки никогда.
+    Новое имя уже занято (например, второй копией) — оставляем как есть.
+    """
+    for folder in (app_dir, app_dir.parent):
+        if _VERSIONED_DIR_RX.match(folder.name):
+            plain = folder.with_name(PLAIN_DIR_NAME)
+            return None if plain.exists() else (folder, plain)
+    return None
+
+
+def _rename_block(app_dir: Path) -> str:
+    """Кусок bat, убирающий версию из имени папки; пустой — если нечего."""
+    found = versioned_folder(app_dir)
+    if not found:
+        return ''
+    old, plain = found
+    return _RENAME_BLOCK.format(old=old, name=plain.name, flag=MOVED_FROM_FLAG,
+                                new_dst=plain / app_dir.relative_to(old))
+
+
+# Где искать ярлыки на программу: рабочий стол, «Пуск», закреплённые на панели
+# задач. Рабочий стол без подпапок — там бывают гигабайты чужих файлов.
+_SHORTCUT_SCRIPT = r'''
+$old = '{old}'; $new = '{new}'
+$dirs = @()
+{dirs}
+$sh = New-Object -ComObject WScript.Shell
+$n = 0
+foreach ($d in $dirs) {{
+  if (-not $d[0] -or -not (Test-Path -LiteralPath $d[0])) {{ continue }}
+  $items = if ($d[1]) {{ Get-ChildItem -LiteralPath $d[0] -Filter *.lnk -Recurse -ErrorAction SilentlyContinue }}
+           else {{ Get-ChildItem -LiteralPath $d[0] -Filter *.lnk -ErrorAction SilentlyContinue }}
+  foreach ($f in $items) {{
+    $l = $sh.CreateShortcut($f.FullName)
+    if (-not $l.TargetPath.StartsWith($old + '\', [StringComparison]::OrdinalIgnoreCase)) {{ continue }}
+    $l.TargetPath = $new + $l.TargetPath.Substring($old.Length)
+    if ($l.WorkingDirectory.StartsWith($old, [StringComparison]::OrdinalIgnoreCase)) {{
+      $l.WorkingDirectory = $new + $l.WorkingDirectory.Substring($old.Length) }}
+    if ($l.IconLocation.StartsWith($old, [StringComparison]::OrdinalIgnoreCase)) {{
+      $l.IconLocation = $new + $l.IconLocation.Substring($old.Length) }}
+    $l.Save(); $n++
+  }}
+}}
+$n
+'''
+
+_DEFAULT_SHORTCUT_DIRS = (
+    "@([Environment]::GetFolderPath('Desktop'), $false)",
+    "@([Environment]::GetFolderPath('CommonDesktopDirectory'), $false)",
+    "@([Environment]::GetFolderPath('Programs'), $true)",
+    "@([Environment]::GetFolderPath('CommonPrograms'), $true)",
+    "@(\"$env:APPDATA\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar\", $false)",
+)
+
+
+def repoint_shortcuts(old: Path, new: Path, folders: list[Path] | None = None) -> int:
+    """
+    Перенаправляет ярлыки, смотревшие внутрь переименованной папки. Сколько поправлено.
+
+    folders — где искать (для проверки); по умолчанию рабочий стол, «Пуск»
+    и закреплённые на панели задач.
+    """
+    def ps(s: str) -> str:
+        return str(s).replace("'", "''")
+
+    # Каждую папку добавляем отдельно: массив из одного элемента PowerShell
+    # «разворачивает», и при одной папке поиска перебор бы сломался.
+    if folders is None:
+        dirs = '\n'.join(f'$dirs += ,{d}' for d in _DEFAULT_SHORTCUT_DIRS)
+    else:
+        dirs = '\n'.join(f"$dirs += ,@('{ps(f)}', $false)" for f in folders)
+    script = _SHORTCUT_SCRIPT.format(old=ps(old), new=ps(new), dirs=dirs)
+    encoded = base64.b64encode(script.encode('utf-16-le')).decode('ascii')
+    try:
+        r = subprocess.run(['powershell', '-NoProfile', '-NonInteractive', '-ExecutionPolicy',
+                            'Bypass', '-EncodedCommand', encoded],
+                           capture_output=True, timeout=60,
+                           creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        out = r.stdout.decode('utf-8', errors='replace').strip().splitlines()
+        return int(out[-1]) if out and out[-1].strip().isdigit() else 0
+    except (OSError, subprocess.SubprocessError, ValueError) as e:
+        log.warning('Не удалось поправить ярлыки: %s', e)
+        return 0
 
 
 def apply_update(staged_root: Path) -> None:
@@ -243,7 +362,7 @@ def apply_update(staged_root: Path) -> None:
 
     bat.write_text(
         _BAT_TEMPLATE.format(exe=EXE_NAME, src=str(staged_root), dst=str(target),
-                             tmp=str(tmp), sep=os.sep),
+                             tmp=str(tmp), sep=os.sep, rename=_rename_block(target)),
         encoding='cp866', errors='replace')
 
     # CREATE_NO_WINDOW, а не DETACHED_PROCESS: чёрного окна так же нет, но

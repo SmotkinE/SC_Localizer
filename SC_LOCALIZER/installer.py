@@ -72,8 +72,9 @@ class GameVersion:
     """Версия игры из build_manifest.id."""
     branch: str = ''      # sc-alpha-4.9.0
     version: str = ''     # 4.9.186.58667
-    short: str = ''       # 4.9.0 — то, с чем сверяем тег релиза перевода
+    short: str = ''       # 4.9.0 — из ветки; номер патча в ней не растёт, верна только серия
     date: str = ''
+    changelist: str = ''  # 12660092 — номер сборки, уникален для каждого патча
 
 
 # Из "sc-alpha-4.9.0" достаём "4.9.0"
@@ -162,7 +163,45 @@ def game_version(branch_dir: Path) -> GameVersion | None:
         version=data.get('Version', ''),
         short=m.group(1) if m else '',
         date=data.get('BuildDateStamp', ''),
+        changelist=str(data.get('RequestedP4ChangeNum', '')).strip(),
     )
+
+
+# Строка сборки, которую MrKraken пишет в свой английский файл:
+# sc-alpha-4.10.1_live_12660092 — версия патча, канал, номер сборки.
+_STARSTRINGS_BUILD_RX = re.compile(r'sc-alpha-(\d+\.\d+\.\d+)_[a-z]+_(\d+)', re.I)
+_build_cache: dict[tuple[str, float], tuple[str, str] | None] = {}
+
+
+def starstrings_build(english_ini: Path) -> tuple[str, str] | None:
+    """(версия патча, номер сборки), под которые собран английский StarStrings."""
+    try:
+        key = (str(english_ini), english_ini.stat().st_mtime)
+    except OSError:
+        return None
+    if key not in _build_cache:
+        try:
+            m = _STARSTRINGS_BUILD_RX.search(english_ini.read_text(encoding='utf-8', errors='replace'))
+        except OSError:
+            m = None
+        _build_cache[key] = (m.group(1), m.group(2)) if m else None
+    return _build_cache[key]
+
+
+def shown_version(game: GameVersion, english_ini: Path | None) -> str:
+    """
+    Версия игры, которую не стыдно показать человеку.
+
+    В манифесте игры номер патча не растёт: и 4.10.0, и 4.10.1 называют себя
+    4.10.0 — а лаунчер и все вокруг говорят 4.10.1. Точный патч знает MrKraken:
+    в английский файл он пишет строку сборки с её номером. Номер совпал с
+    номером сборки игры — значит, и патч тот же. Не совпал (игра обновилась
+    раньше StarStrings) — честно показываем только серию, 4.10.
+    """
+    build = starstrings_build(english_ini) if english_ini else None
+    if build and game.changelist and build[1] == game.changelist:
+        return build[0]
+    return version_series(game.short)
 
 
 @dataclass

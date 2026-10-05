@@ -27,13 +27,14 @@ from github_source import (EN_BRANCH, GitHubError, download_english, download_ru
 from ini_io import ensure_user_overrides, load_ini, load_overrides
 from installer import (find_branches, find_game_dirs, game_version, install,
                        install_english, is_live_branch, is_ptu_tag, restore_original,
-                       tag_fits_game)
+                       shown_version, tag_fits_game)
 from logger import get_logger
 from merger import merge
 from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, ORIGINAL_ID,
                    classify, default_profile, defaults_changed_since)
-from updater import (UPDATE_REPO, AppRelease, UpdateError, apply_update, is_newer,
-                     latest_release, stage_update, updates_supported)
+from updater import (MOVED_FROM_FLAG, PLAIN_DIR_NAME, UPDATE_REPO, AppRelease, UpdateError,
+                     apply_update, is_newer, latest_release, repoint_shortcuts, stage_update,
+                     updates_supported)
 from version import APP_VERSION
 
 log = get_logger(__name__)
@@ -358,8 +359,9 @@ def _autodetect_game() -> tuple[str, list[str], str]:
 
 def _game_target() -> tuple[str, str]:
     """
-    Версия игры вида '4.9.0' и ветка (LIVE, PTU…) — с ними сверяются теги
-    релизов перевода: ветка решает, годятся ли сборки для тестового сервера.
+    Версия игры вида '4.10.1' (или только серия '4.10', если точный патч
+    неизвестен) и ветка (LIVE, PTU…) — с ними сверяются теги релизов перевода:
+    по серии, а ветка решает, годятся ли сборки для тестового сервера.
 
     Ветку спрашиваем у автоопределения, а не у сохранённых путей: игрок мог
     сидеть на HOTFIX, который после патча исчез, и в файле осталось имя
@@ -370,7 +372,12 @@ def _game_target() -> tuple[str, str]:
     if not game_dir or not branch:
         return '', branch
     v = game_version(Path(game_dir) / branch)
-    return (v.short if v else ''), branch
+    if not v:
+        return '', branch
+    # Точный патч узнаём по английскому файлу StarStrings: в манифесте игры
+    # номер патча не растёт, и «4.10.0» на игре 4.10.1 вводило людей в заблуждение.
+    english = load_paths()['english']
+    return shown_version(v, Path(english) if english else None), branch
 
 
 @app.route('/api/source')
@@ -1121,6 +1128,34 @@ def handle_any(e: Exception):
     return jsonify({'error': f'{type(e).__name__}: {e}'}), 500
 
 
+def _after_move(old: Path) -> None:
+    """
+    Обновление убрало версию из имени папки программы. Чиним всё, что смотрело
+    по старому пути: свои сохранённые пути — сразу, до проверки перевода,
+    а ярлыки — в фоне, их правит PowerShell, и это пара секунд.
+    """
+    new = old.with_name(PLAIN_DIR_NAME)
+    if not Config.BASE_DIR.resolve().is_relative_to(new.resolve()):
+        log.warning('Флаг переноса из %s, но программа не в %s — пропускаю', old, new)
+        return
+
+    prefix = str(old) + os.sep
+    moved = {k: str(new) + v[len(str(old)):] for k, v in load_paths().items()
+             if isinstance(v, str) and v.lower().startswith(prefix.lower())}
+    if moved:
+        save_paths(**moved)
+    ui_log(f'Папка программы переименована: {old.name} → {new.name}')
+    log.info('Папка переименована %s -> %s, путей поправлено: %d', old, new, len(moved))
+
+    def shortcuts() -> None:
+        n = repoint_shortcuts(old, new)
+        log.info('Ярлыков на программу поправлено: %d', n)
+        if n:
+            ui_log(f'Ярлыки поправлены под новое имя папки: {n}')
+
+    threading.Thread(target=shortcuts, daemon=True).start()
+
+
 def _port_is_busy() -> bool:
     """Занят ли наш порт — значит программа уже запущена."""
     import socket
@@ -1202,6 +1237,11 @@ def main() -> None:
     # Личный файл исправлений: заготовка, если его нет. Делается при каждом
     # запуске, чтобы файл был на месте до того, как игрок полезет его искать.
     ensure_user_overrides(Config.OVERRIDES_FILE)
+
+    if MOVED_FROM_FLAG in sys.argv:
+        i = sys.argv.index(MOVED_FROM_FLAG)
+        if i + 1 < len(sys.argv):
+            _after_move(Path(sys.argv[i + 1]))
 
     just_updated = UPDATED_FLAG in sys.argv
 
