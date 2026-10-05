@@ -4,6 +4,7 @@ output/
 cache/
 profile.json
 paths.json
+installed.json
 __pycache__/
 *.pyc
 venv/

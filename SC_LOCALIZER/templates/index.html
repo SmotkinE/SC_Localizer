@@ -67,6 +67,7 @@
   .actions-sub button { flex: 1; padding: 11px; font-size: 13px; }
   .file-status { font-size: 12px; margin-top: 5px; min-height: 16px; }
   .file-status.ok { color: var(--ok); } .file-status.bad { color: var(--err); }
+  .file-status.warn { color: var(--warn); }
 
   /* Лог */
   .log-head { display: flex; justify-content: space-between; align-items: center;
@@ -154,6 +155,13 @@
   .modal-section { padding: 14px 18px; border-bottom: 1px solid var(--line); }
   .modal-section:last-of-type { border-bottom: none; }
   .modal-section > .step-label:first-child { margin-top: 0; }
+
+  /* В своём окне высота подстраивается под содержимое, и прокрутка нужна,
+     только если оно не влезло: окно упёрлось в экран или его сжали руками.
+     Иначе полоса мелькала бы каждый раз, пока окно доезжает до новой высоты. */
+  html.in-window { overflow: hidden; }
+  html.in-window.scroll { overflow: auto; }
+  html.moving .modal-body { overflow: hidden; }
 </style>
 </head>
 <body>
@@ -456,6 +464,7 @@ $('fetch').addEventListener('click', async () => {
   }
   btn.disabled = false; btn.textContent = 'Скачать';
   loadStatus();
+  refreshInstalled();
   loadLog();
 });
 
@@ -472,15 +481,49 @@ async function loadGame(post) {
     `<option value="${esc(b)}" ${b === g.branch ? 'selected' : ''}>${esc(b)}</option>`).join('')
     || '<option value="">—</option>';
 
-  const st = $('gameStatus');
   const ok = g.game_dir_ok && g.branches.length > 0;
   $('gamePath').classList.toggle('bad', !ok);
-  st.className = 'file-status ' + (ok ? 'ok' : 'bad');
-  st.textContent = !g.game_dir ? 'папка не выбрана'
-    : !g.game_dir_ok ? 'папка не найдена'
-    : g.branches.length === 0 ? 'внутри нет веток игры (LIVE, PTU, HOTFIX)'
-    : `найдено веток: ${g.branches.join(', ')}`;
+  showGameStatus(g);
   $('install').disabled = !ok;
+}
+
+/* Под папкой игры — что сейчас стоит в выбранной ветке. Свежий перевод
+   программа качает сама, а в игру он попадает только по кнопке; если скачано
+   новее установленного, здесь же подсказка нажать её. */
+const MODE_NAME = {basic: 'только описания', full: 'полный русский'};
+
+function installedText(i) {
+  if (i.kind === 'original') return 'В игре: оригинал';
+  if (i.kind === 'foreign') return `В игре другой язык: ${i.language}`;
+  if (i.kind === 'english') return 'В игре: английский с блюпринтами' + (i.build ? ` ${i.build}` : '');
+  if (!i.mode) return 'В игре: русский перевод, версия неизвестна';
+  return `В игре: ${MODE_NAME[i.mode]}, ` + (i.tag ? `перевод ${i.tag}` : 'свои файлы');
+}
+
+function showGameStatus(g) {
+  const st = $('gameStatus'), i = g.installed;
+  const ok = g.game_dir_ok && g.branches.length > 0;
+  if (!ok || !i) {
+    st.className = 'file-status ' + (ok ? 'ok' : 'bad');
+    st.textContent = !g.game_dir ? 'папка не выбрана'
+      : !g.game_dir_ok ? 'папка не найдена'
+      : g.branches.length === 0 ? 'внутри нет веток игры (LIVE, PTU, HOTFIX)'
+      : `найдено веток: ${g.branches.join(', ')}`;
+    return;
+  }
+  let text = installedText(i);
+  if (i.pending) {
+    text += (i.pending === 'english' ? ' · английский обновился' : ` · скачан ${i.pending}`)
+          + ' — нажми «Установить в игру»';
+  }
+  st.className = 'file-status ' + (i.pending || i.kind === 'foreign' ? 'warn'
+    : i.kind === 'original' || !(i.mode || i.build) ? '' : 'ok');
+  st.textContent = text;
+}
+
+// Обновить только эту строку: поле с папкой не трогаем — вдруг его как раз правят.
+async function refreshInstalled() {
+  try { showGameStatus(await (await fetch('/api/game')).json()); } catch (e) { /* не страшно */ }
 }
 
 function saveGame() {
@@ -522,6 +565,7 @@ $('install').addEventListener('click', async () => {
   }
   res.classList.add('show');
   btn.disabled = false; btn.textContent = installLabel();
+  refreshInstalled();
   loadLog();
 });
 
@@ -578,6 +622,7 @@ async function saveProfile() {
     method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(profile)
   });
   refreshCounts();
+  refreshInstalled();
   loadLog();
 }
 
@@ -742,6 +787,7 @@ async function loadStatus() {
     clearInterval(freshTimer); freshTimer = null;
     // Проверка закончилась — пути и версии на странице уже устарели.
     loadPaths();
+    refreshInstalled();
     if (logOpen) loadLog();
   }
 }
@@ -854,6 +900,7 @@ async function checkUpdates(quiet) {
   try { d = await (await fetch('/api/check', {method: 'POST'})).json(); } catch (e) { /* ниже */ }
   await Promise.all([loadStatus(), loadUpdate()]);
   loadPaths();
+  refreshInstalled();
   if (!quiet) {
     // Нашлось новое — об этом скажут плашки, подпись сразу возвращается.
     btn.textContent = !d ? 'Не удалось проверить' : d.news.length ? CHECK_LABEL : 'Всё свежее ✓';
@@ -887,19 +934,39 @@ function wantedHeight() {
   return Math.ceil(h);
 }
 
-function fitWindow() {
-  const api = window.pywebview && window.pywebview.api;
-  if (api && api.fit) api.fit(wantedHeight(), window.devicePixelRatio || 1);
+let fitQueued = false, fitsRunning = 0;
+const root = document.documentElement;
+
+function updateScroll() {
+  root.classList.toggle('scroll', window.innerHeight < wantedHeight() - 2);
 }
 
-let fitQueued = false;
+function fitWindow() {
+  fitsRunning++;
+  // Окно отвечает, когда доехало: тогда и решаем, нужна ли прокрутка.
+  window.pywebview.api.fit(wantedHeight(), window.devicePixelRatio || 1)
+    .catch(() => {})
+    .finally(() => {
+      if (--fitsRunning > 0 || fitQueued) return;
+      root.classList.remove('moving');
+      updateScroll();
+    });
+}
+
 const queueFit = () => {
+  // Полосу во всплывающем окне прячем сразу, ещё до отрисовки кадра:
+  // наблюдатели зовут нас между перестройкой страницы и кадром.
+  root.classList.add('moving');
   if (fitQueued) return;
   fitQueued = true;
   requestAnimationFrame(() => { fitQueued = false; fitWindow(); });
 };
 
 window.addEventListener('pywebviewready', () => {
+  if (!(window.pywebview.api && window.pywebview.api.fit)) return;
+  root.classList.add('in-window');
+  // Человек сам потянул край окна — тогда без прокрутки до низа не достать.
+  window.addEventListener('resize', () => { if (!fitsRunning && !fitQueued) updateScroll(); });
   // Высота страницы меняется — лог, плашки, результат установки, ширина окна.
   new ResizeObserver(queueFit).observe(document.querySelector('.window'));
   // Всплывающие окна открываются сменой класса, а список категорий

@@ -11,6 +11,8 @@ pywebview и всё нужное едут внутри сборки — поль
 """
 import os
 import sys
+import threading
+import time
 
 from logger import get_logger
 
@@ -27,6 +29,14 @@ USER_AGENT = 'SCLocalizerWindow'
 # Ниже не ужимаем: при совсем маленьком окне кнопки начинают налезать.
 MIN_HEIGHT = 520
 
+# Цвет фона страницы. Окно и движок до отрисовки показывают его же: со
+# стандартным белым каждое изменение высоты мигало белой полосой внизу.
+BACKGROUND = '#0e1621'
+
+# За сколько секунд окно доезжает до новой высоты. Мгновенный прыжок
+# выглядит рывком, а дольше — уже ждёшь окно.
+ANIMATION_SECONDS = 0.18
+
 # Открытое окно — чтобы второй запуск программы мог вытащить его вперёд.
 _window = None
 
@@ -34,6 +44,13 @@ _window = None
 # Ужалось обратно — возвращаем туда. set_top — куда поставили мы сами: если
 # окно оказалось в другом месте, его передвинул человек, и старое место забываем.
 _position = {'home': None, 'set_top': None}
+
+# Куда сейчас едет окно: (верх, высота). Новая подгонка посреди движения
+# не ждёт его конца, а меняет цель — окно поворачивает с того места, где оно есть.
+_motion = {'target': None, 'turn': 0, 'running': False}
+_motion_lock = threading.Lock()
+_still = threading.Event()  # окно стоит на месте
+_still.set()
 
 
 class _Api:
@@ -47,11 +64,16 @@ class _Api:
         Считаем средствами Windows, в настоящих пикселях экрана. Сама страница
         знает о себе не всё: «верх окна» для неё — верх страницы, без заголовка,
         и на этом подгонка ошибалась ровно на высоту заголовка.
+
+        Отвечает, когда окно доехало до новой высоты. До тех пор страница
+        прячет полосы прокрутки: иначе, пока окно растёт, они мелькали бы.
         """
         try:
             _fit_height(float(content) * float(dpr), float(dpr))
         except Exception as e:
             log.warning('Не удалось подогнать окно: %s', e)
+            return
+        _still.wait(1)
 
 
 def _fit_height(content_px: float, dpr: float) -> None:
@@ -89,14 +111,20 @@ def _fit_height(content_px: float, dpr: float) -> None:
     height = min(height, work.bottom - work.top)
     height = max(height, round(MIN_HEIGHT * dpr))
 
-    top = win.top
-    if _position['set_top'] is not None and win.top != _position['set_top']:
+    # Пока окно едет, его настоящее место — промежуточное; считаем от цели.
+    with _motion_lock:
+        moving = _motion['running']
+        cur_top, cur_height = (_motion['target'] if moving
+                               else (win.top, win.bottom - win.top))
+
+    top = cur_top
+    if not moving and _position['set_top'] is not None and win.top != _position['set_top']:
         _position['home'] = None  # окно передвинули руками — это теперь его место
 
     if top + height > work.bottom:
         # Внизу не хватает места — поднимаем окно, а не режем содержимое.
         if _position['home'] is None:
-            _position['home'] = win.top
+            _position['home'] = cur_top
         top = max(work.top, work.bottom - height)
     elif _position['home'] is not None:
         # Ужалось — возвращаем на прежнее место, насколько оно теперь влезает.
@@ -105,11 +133,64 @@ def _fit_height(content_px: float, dpr: float) -> None:
             _position['home'] = None
     _position['set_top'] = top
 
-    if abs(height - (win.bottom - win.top)) <= 2 and top == win.top:
+    if abs(height - cur_height) <= 2 and top == cur_top:
         return  # не дёргать окно из-за пары пикселей
+    _move_to(hwnd, top, height)
+
+
+def _move_to(hwnd, top: int, height: int) -> None:
+    """Задаёт окну новую цель и, если оно стоит, трогает его с места."""
+    with _motion_lock:
+        _motion['target'] = (top, height)
+        _motion['turn'] += 1
+        if _motion['running']:
+            return  # уже едет — подхватит новую цель на следующем кадре
+        _motion['running'] = True
+        _still.clear()
+    threading.Thread(target=_animate, args=(hwnd,), daemon=True).start()
+
+
+def _animate(hwnd) -> None:
+    """
+    Ведёт окно к цели за ANIMATION_SECONDS, плавно тормозя в конце.
+
+    Время меряем по часам, а не по числу кадров: если Windows отвечает
+    медленно, кадров будет меньше, но окно всё равно приедет вовремя.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    u32 = ctypes.windll.user32
     SWP_NOZORDER, SWP_NOACTIVATE = 0x0004, 0x0010
-    u32.SetWindowPos(hwnd, None, win.left, top, win.right - win.left, height,
-                     SWP_NOZORDER | SWP_NOACTIVATE)
+    try:
+        while True:
+            with _motion_lock:
+                (to_top, to_height), turn = _motion['target'], _motion['turn']
+            r = wintypes.RECT()
+            u32.GetWindowRect(hwnd, ctypes.byref(r))
+            from_top, from_height = r.top, r.bottom - r.top
+            start = time.perf_counter()
+            while True:
+                p = min(1.0, (time.perf_counter() - start) / ANIMATION_SECONDS)
+                k = 1 - (1 - p) ** 3  # быстро трогается, мягко встаёт
+                u32.SetWindowPos(hwnd, None, r.left,
+                                 round(from_top + (to_top - from_top) * k),
+                                 r.right - r.left,
+                                 round(from_height + (to_height - from_height) * k),
+                                 SWP_NOZORDER | SWP_NOACTIVATE)
+                with _motion_lock:
+                    if _motion['turn'] != turn:
+                        break  # цель сменилась — едем к новой отсюда
+                    if p >= 1:
+                        _motion['running'] = False
+                        _still.set()
+                        return
+                time.sleep(0.008)
+    except Exception as e:
+        log.warning('Не удалось подогнать окно: %s', e)
+        with _motion_lock:
+            _motion['running'] = False
+            _still.set()
 
 
 def available() -> bool:
@@ -145,7 +226,8 @@ def run(url: str) -> bool:
         webview.settings['ALLOW_DOWNLOADS'] = True
         # Высота стартовая: страница сразу подгонит её под содержимое.
         _window = webview.create_window(TITLE, url, width=960, height=720,
-                                        min_size=(640, MIN_HEIGHT), js_api=_Api())
+                                        min_size=(640, MIN_HEIGHT), js_api=_Api(),
+                                        background_color=BACKGROUND)
         # Только Edge. Без явного указания pywebview на старой системе может
         # откатиться на движок Internet Explorer, а страница на нём не работает.
         webview.start(gui='edgechromium', user_agent=USER_AGENT)

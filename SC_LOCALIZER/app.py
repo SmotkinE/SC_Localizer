@@ -25,9 +25,10 @@ from file_dialog import run_dialog_to_file
 from github_source import (EN_BRANCH, GitHubError, download_english, download_russian,
                            english_version, pick_release, russian_releases)
 from ini_io import ensure_user_overrides, load_ini, load_overrides
-from installer import (find_branches, find_game_dirs, game_version, install,
-                       install_english, is_live_branch, is_ptu_tag, restore_original,
-                       shown_version, tag_fits_game)
+from installer import (LOCALE_DIR, active_language, find_branches, find_game_dirs,
+                       game_version, install, install_english, is_live_branch, is_ptu_tag,
+                       localization_file, restore_original, shown_version, starstrings_build,
+                       tag_fits_game)
 from logger import get_logger
 from merger import merge
 from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, ORIGINAL_ID,
@@ -842,7 +843,97 @@ def api_game():
         'game_dir_ok': bool(game_dir) and Path(game_dir).is_dir(),
         'branches': branches,
         'branch': branch,
+        'installed': _installed_in(Path(game_dir) / branch) if game_dir and branch else None,
     })
+
+
+# ---------- что стоит в игре ----------
+#
+# Скачанный перевод и установленный — разные вещи: свежий программа качает
+# сама, а в игру он попадает только по кнопке. Поэтому установку запоминаем:
+# какой режим, какой тег, какой английский — и отпечаток файла в игре, чтобы
+# узнать, если его потом заменили или удалили.
+
+def _norm(path: Path) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _file_stamp(path: Path) -> list | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _load_installed() -> dict:
+    try:
+        return json.loads(Config.INSTALLED_FILE.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _remember_install(branch_dir: Path, target: Path | None = None, **info) -> None:
+    """Записывает, что поставили в ветку. target=None — наших файлов там больше нет."""
+    data = _load_installed()
+    key = _norm(branch_dir)
+    if target is None:
+        data.pop(key, None)
+    else:
+        data[key] = {**info, 'file': _norm(target), 'stamp': _file_stamp(target)}
+    try:
+        Config.INSTALLED_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2),
+                                         encoding='utf-8')
+    except OSError as e:
+        log.warning('Не удалось запомнить установку: %s', e)
+
+
+def _selected_mode() -> str:
+    profile = load_profile()
+    if profile.get(ORIGINAL_ID):
+        return 'original'
+    if profile.get(ENGLISH_ID):
+        return 'english'
+    return 'full' if profile.get(FULL_ID) else 'basic'
+
+
+def _installed_in(branch_dir: Path) -> dict:
+    """
+    Что сейчас показывает игра в этой ветке.
+
+    kind: original — родной текст; russian / english — наш файл (или похожий,
+    тогда mode и tag пустые); foreign — в user.cfg чужой язык.
+    pending — тег или 'english', если скачано новее установленного, и кнопка
+    «Установить в игру» его поставит.
+    """
+    language = active_language(branch_dir)
+    if language not in (LOCALE_DIR, 'english'):
+        return {'kind': 'foreign', 'language': language}
+
+    target = localization_file(branch_dir, language)
+    if not target.is_file():
+        return {'kind': 'original'}
+
+    kind = 'russian' if language == LOCALE_DIR else 'english'
+    rec = _load_installed().get(_norm(branch_dir))
+    if not rec or rec.get('file') != _norm(target) or rec.get('stamp') != _file_stamp(target):
+        # Ставили не мы, или до 1.5.5, когда установку ещё не запоминали.
+        # Английский StarStrings узнаётся и так — по строке сборки внутри.
+        build = starstrings_build(target) if kind == 'english' else None
+        return {'kind': kind, 'mode': '', 'tag': '', 'build': build[0] if build else ''}
+
+    result = {'kind': kind, 'mode': rec.get('mode', ''), 'tag': rec.get('tag', ''),
+              'build': rec.get('build', ''), 'pending': ''}
+    if result['mode'] != _selected_mode():
+        return result
+
+    paths = load_paths()
+    if (kind == 'russian' and paths['source'].startswith('github')
+            and paths['ru_tag'] and paths['ru_tag'] != result['tag']):
+        result['pending'] = paths['ru_tag']
+    elif rec.get('english_tag') and _cache_meta().get('english_tag') not in (None, rec['english_tag']):
+        result['pending'] = 'english'
+    return result
 
 
 @app.route('/api/install', methods=['POST'])
@@ -885,6 +976,13 @@ def api_install():
     if not result.ok:
         return jsonify({'error': '; '.join(result.messages)}), 400
 
+    paths = load_paths()
+    github = paths['source'].startswith('github')
+    _remember_install(Path(game_dir) / branch, Path(result.installed_to),
+                      mode='full' if profile.get(FULL_ID) else 'basic',
+                      tag=paths['ru_tag'] if github else '',
+                      english_tag=_cache_meta().get('english_tag', '') if github else '')
+
     return jsonify({
         'ok': True, 'mode': 'russian',
         'installed_to': result.installed_to,
@@ -905,6 +1003,7 @@ def _restore_original_mode(branch_dir: Path):
                           and m == result.cfg_message else 'info')
     if not result.ok:
         return jsonify({'error': '; '.join(result.messages)}), 400
+    _remember_install(branch_dir)
     return jsonify({
         'ok': True, 'mode': 'original',
         'backup': result.backup,
@@ -937,6 +1036,10 @@ def _install_english_mode(branch_dir: Path):
         ui_log(m)
     if not result.ok:
         return jsonify({'error': '; '.join(result.messages)}), 400
+    build = starstrings_build(en_dest)
+    _remember_install(branch_dir, Path(result.installed_to), mode='english',
+                      build=build[0] if build else '',
+                      english_tag=_cache_meta().get('english_tag', ''))
     return jsonify({
         'ok': True, 'mode': 'english',
         'installed_to': result.installed_to,

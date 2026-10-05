@@ -466,3 +466,24 @@ def _restore_user_cfg(branch_dir: Path) -> tuple[str, str]:
     cfg.write_text(_CFG_LANG_RX.sub('g_language = english', text), encoding='utf-8')
     log.info('user.cfg: %s -> english', LOCALE_DIR)
     return 'created', 'Готово: язык вернулся на english, игра показывает оригинал.'
+
+
+def localization_file(branch_dir: Path, locale: str) -> Path:
+    """Куда игра смотрит за текстом этой локали."""
+    return branch_dir / 'data' / 'Localization' / locale / 'global.ini'
+
+
+def active_language(branch_dir: Path) -> str:
+    """
+    Язык, который включит игра: g_language из user.cfg. Нет файла или
+    строки — игра на english.
+
+    По нему понятно, какой из наших файлов сейчас в деле: после «английского
+    с блюпринтами» русский файл остаётся на месте, но игра его уже не читает.
+    """
+    try:
+        text = (branch_dir / 'user.cfg').read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return 'english'
+    m = _CFG_LANG_RX.search(text)
+    return m.group(1).strip().lower() if m else 'english'
