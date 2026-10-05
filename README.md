@@ -1,5 +1,7 @@
 # SC Localizer
 
+![SC Localizer — окно программы и выбор перевода](docs/cover.png)
+
 Русская локализация Star Citizen: программа сама качает свежий перевод, собирает его и ставит в игру.
 
 ## [Скачать последнюю версию](https://github.com/SmotkinE/SC_Localizer/releases/latest)
