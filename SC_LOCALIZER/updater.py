@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import zipfile
 from dataclasses import dataclass
@@ -252,6 +253,59 @@ set /a TRIES+=1
 if %TRIES% GEQ 5 goto run
 ping -n 2 127.0.0.1 >nul
 goto rename'''
+
+
+# Не вышло переименовать при первом запуске после обновления — больше не
+# пытаемся: иначе программа перезапускалась бы по кругу.
+RELOCATE_FAILED_FLAG = '--relocate-failed'
+
+# Обновление с версий до 1.5.3 проводит их собственный bat, а он переименовывать
+# не умеет. Тогда это делает новая версия при первом запуске: закрывается,
+# этот bat дожидается её выхода (по номеру процесса — у человека может быть
+# открыта и другая копия), переименовывает папку и запускает её обратно.
+_RELOCATE_TEMPLATE = r'''@echo off
+cd /d "%~dp0"
+
+set TRIES=0
+:wait
+tasklist /FI "PID eq {pid}" /NH | "%SystemRoot%\System32\find.exe" /I "{exe}" >nul
+if errorlevel 1 goto go
+set /a TRIES+=1
+if %TRIES% GEQ 30 goto go
+ping -n 2 127.0.0.1 >nul
+goto wait
+
+:go
+set "RUNDIR={dst}"
+set "MOVEDFROM={failed}"
+{rename}
+:run
+start "" /D "%RUNDIR%" "%RUNDIR%{sep}{exe}" {updated} %MOVEDFROM%
+exit /b 0
+'''
+
+
+def relocate_after_update(updated_flag: str) -> bool:
+    """
+    Запускает переименование папки и возвращает True — тогда программа должна
+    сразу выйти. False — переименовывать нечего, работаем как обычно.
+    """
+    if not Config.IS_FROZEN or not _rename_block(Config.BASE_DIR):
+        return False
+
+    exe = Path(sys.executable).name
+    tmp = Path(tempfile.gettempdir())
+    bat = tmp / 'sc_localizer_relocate.bat'
+    bat.write_text(
+        _RELOCATE_TEMPLATE.format(pid=os.getpid(), exe=exe, dst=Config.BASE_DIR, sep=os.sep,
+                                  failed=RELOCATE_FAILED_FLAG, updated=updated_flag,
+                                  rename=_rename_block(Config.BASE_DIR)),
+        encoding='cp866', errors='replace')
+    out = open(tmp / 'sc_localizer_relocate.log', 'wb')
+    subprocess.Popen(['cmd', '/c', str(bat)], cwd=str(tmp), stdout=out, stderr=subprocess.STDOUT,
+                     creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+    log.info('Убираю версию из имени папки %s, перезапускаюсь', Config.BASE_DIR)
+    return True
 
 
 def versioned_folder(app_dir: Path) -> tuple[Path, Path] | None:

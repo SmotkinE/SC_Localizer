@@ -32,9 +32,9 @@ from logger import get_logger
 from merger import merge
 from rules import (CATEGORIES, DEFAULTS_VERSION, ENGLISH_ID, FULL_ID, ORIGINAL_ID,
                    classify, default_profile, defaults_changed_since)
-from updater import (MOVED_FROM_FLAG, PLAIN_DIR_NAME, UPDATE_REPO, AppRelease, UpdateError,
-                     apply_update, is_newer, latest_release, repoint_shortcuts, stage_update,
-                     updates_supported)
+from updater import (MOVED_FROM_FLAG, PLAIN_DIR_NAME, RELOCATE_FAILED_FLAG, UPDATE_REPO,
+                     AppRelease, UpdateError, apply_update, is_newer, latest_release,
+                     relocate_after_update, repoint_shortcuts, stage_update, updates_supported)
 from version import APP_VERSION
 
 log = get_logger(__name__)
@@ -455,7 +455,18 @@ def _drop_old_cache(keep: Path) -> None:
             log.warning('Не удалось убрать %s: %s', old.name, e)
 
 
+# Подготовку файлов зовут стартовая проверка, кнопка «Проверить обновления»,
+# проверка раз в час и установка. Вдвоём они качали бы в одни и те же файлы.
+_sources_lock = threading.RLock()
+
+
 def ensure_fresh_sources(force: bool = False) -> dict:
+    """Готовит свежие файлы перевода — по одному вызову за раз, см. _sources_lock."""
+    with _sources_lock:
+        return _ensure_fresh_sources(force)
+
+
+def _ensure_fresh_sources(force: bool = False) -> dict:
     """
     Готовит свежие файлы перевода: качает, что изменилось, остальное берёт из кэша.
 
@@ -640,6 +651,27 @@ _update: dict = {'state': 'checking' if updates_supported() else 'off',
 # Найденный релиз держим отдельно от _update: наружу он отдаётся как JSON,
 # а для скачивания нужен сам объект со ссылкой и размером.
 _update_found: dict = {'release': None}
+
+
+@app.route('/api/check', methods=['POST'])
+def api_check():
+    """
+    Проверить обновления: и перевод, и саму программу. Зовут кнопка в заголовке
+    и сама страница раз в час — иначе, держи программу открытой хоть сутки,
+    о новой версии она бы не узнала: при запуске проверка одна.
+    """
+    # Сорвётся проверка (нет сети) — отметка «скачано» не должна остаться
+    # от прошлого раза и выдать старое скачивание за новое.
+    _startup['downloaded'] = False
+    startup_check()          # свежий перевод — скачает, как при запуске
+    check_app_update()       # новая версия программы — покажет плашку
+    news = []
+    if _update.get('state') == 'available':
+        news.append('program')
+    if _startup.get('downloaded'):
+        news.append('translation')
+    return jsonify({'news': news, 'translation': _startup.get('state'),
+                    'program': _update.get('state')})
 
 
 def check_app_update() -> None:
@@ -1221,6 +1253,12 @@ def main() -> None:
             sys.argv[4] if len(sys.argv) > 4 else 'dialog_result.txt',
         )
         return
+
+    # Обновились с версии, чей bat не умел убирать версию из имени папки
+    # (до 1.5.3), — убираем сами: выходим, bat переименует и запустит обратно.
+    if (UPDATED_FLAG in sys.argv and MOVED_FROM_FLAG not in sys.argv
+            and RELOCATE_FAILED_FLAG not in sys.argv and relocate_after_update(UPDATED_FLAG)):
+        os._exit(0)
 
     url = f'http://{Config.HOST}:{Config.PORT}'
 

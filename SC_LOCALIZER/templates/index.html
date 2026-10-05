@@ -17,8 +17,13 @@
          font: 14px/1.55 "Segoe UI", system-ui, sans-serif;
          display: flex; justify-content: center; padding: 28px 16px; }
   .window { width: 100%; max-width: 700px; }
-  h1 { font-size: 19px; margin: 0 0 22px; font-weight: 600; }
+  h1 { font-size: 19px; margin: 0 0 22px; font-weight: 600; display: flex; align-items: baseline; }
   h1 span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 8px; }
+  /* «Проверить обновления» — подписью, как «показать» у лога, а не кнопкой. */
+  .check-upd { margin-left: auto; padding: 0 0 0 16px; border: none; background: none;
+               color: var(--muted); font-size: 12px; font-weight: 400; }
+  .check-upd:hover:not(:disabled) { color: var(--accent); }
+  .check-upd:disabled { opacity: 1; }
 
   .step { margin-bottom: 18px; }
   .step-label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 13px; }
@@ -153,7 +158,8 @@
 </head>
 <body>
 <div class="window">
-  <h1>SC Localizer<span id="appVer">сборка русской локализации Star Citizen</span></h1>
+  <h1>SC Localizer<span id="appVer">сборка русской локализации Star Citizen</span>
+    <button id="checkUpd" class="check-upd">Проверить обновления</button></h1>
 
   <div class="fresh" id="fresh">
     <span class="dot">&#9679;</span>
@@ -831,6 +837,33 @@ loadUpdate();
     $('install').textContent = installLabel();
   } catch (e) { /* профиль недоступен — остаётся подпись из разметки */ }
 })();
+
+/* ---------- проверка обновлений ----------
+   Кнопкой в заголовке и сама раз в час, пока программа открыта: при запуске
+   проверка одна, и без этого открытая программа о новой версии не узнала бы.
+   Проверяется и перевод, и сама программа; что нашлось — покажут плашки. */
+const CHECK_LABEL = 'Проверить обновления';
+let checking = false;
+
+async function checkUpdates(quiet) {
+  if (checking) return;
+  checking = true;
+  const btn = $('checkUpd');
+  if (!quiet) { btn.disabled = true; btn.textContent = 'Проверяю…'; }
+  let d = null;
+  try { d = await (await fetch('/api/check', {method: 'POST'})).json(); } catch (e) { /* ниже */ }
+  await Promise.all([loadStatus(), loadUpdate()]);
+  loadPaths();
+  if (!quiet) {
+    // Нашлось новое — об этом скажут плашки, подпись сразу возвращается.
+    btn.textContent = !d ? 'Не удалось проверить' : d.news.length ? CHECK_LABEL : 'Всё свежее ✓';
+    setTimeout(() => { btn.textContent = CHECK_LABEL; btn.disabled = false; }, d && d.news.length ? 0 : 2500);
+  }
+  checking = false;
+}
+
+$('checkUpd').addEventListener('click', () => checkUpdates(false));
+setInterval(() => checkUpdates(true), 60 * 60 * 1000);
 
 /* ---------- окно программы ----------
    В собственном окне (не во вкладке) высота подстраивается под содержимое:
